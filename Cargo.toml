@@ -1,0 +1,9 @@
+[package]
+name = "z80"
+version = "0.1.0"
+authors = ["ubsan <npmazzuca@gmail.com>"]
+
+[profile.dev]
+debug-assertions = false
+
+[dependencies]
