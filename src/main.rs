@@ -3,47 +3,93 @@
 // TODO(ubsan): n flag
 #![feature(box_syntax, question_mark)]
 
+// CALLING CONVENTION
+// first, u16s get passed in BC, DE, HL in that order
+// then, u8s get passed in A, B, C, D, E, H, L in that order;
+//   if a reg is already taken by a u16, then skip those regs
+// if a certain kind has to overflow the parameter regs, it's passed on the
+//   stack, backwards order
+// i.e., (1: u8, 2: u16, 3: u8, 4: u8, 5: u16, 6: u16, 7: u16, 8: u16) is
+//   2 = BC,  5 = DE, 6 = HL, 7 = (SP + 4), 8 = (SP + 2),
+//     1 = A, 4 = (SP + 6), 3 = (SP + 7)
+//     RET = (SP)
+// u8 returns are in A, u16 returns are in BC
+//   if it returns two u8s, return in BC
+// Otherwise, on the stack, with the address in BC
+//   (taking up the first u16 slot)
+// primes are saved
+// IX and IY are saved
 fn main() {
   let mut state = State::with_memory(&[
-      0x06, 0x0A,       // LD B, 02
+      0x3E, 0x05,       // LD A, 5
+      0xCD, 0x0A, 0x00, // CALL fib
+      0x76,             // HALT
+      0x00,             // NOP
+      0x00,             // NOP
+      0x00,             // NOP
+      0x00,             // NOP
+
+
+    // PROC fib ; (n: u8(a)) -> u8
+      0x47,             // LD B, A
       0x16, 0x01,       // LD D, 01
       0x26, 0x00,       // LD H, 00
-      0x3E, 0x00,       // LD A, 0
       0x40,             // LD B, B
-      0x28, 12,         // JR Z, end
+      0xC8,             // RET Z
       0x05,             // DEC B
-      0x28, 10,         // JR Z, end_1
-      // loop:
+      0x28, 10,         // JR Z, fib__end_1
+
+      // fib__loop:
       0x7C,             // LD A, H
       0x82,             // ADD A, D
       0x67,             // LD H, A
       0xEB,             // EX DE, HL
-      0x10, -4i8 as u8, // DJNZ loop
+      0x10, -4i8 as u8, // DJNZ fib__loop
 
-      // end:
-      0x76,             // HALT
+      0xC9,             // RET
 
-      // end_1:
-      0x3C,             // INC A ; equivalent to LD A, 1
-      0x76,             // HALT
+      // fib__end_1:
+      0x3E, 0x01,       // LD A, 1
+      0xC9,             // RET
+    // ENDP fib
   ]);
 
+  let mut brks = Vec::with_capacity(20);
   let mut old_cmd = None;
   println!("{:?}", state);
-  while state.step() {
+  loop {
     match get_dbg_cmd(old_cmd) {
-      d @ DebugCommand::Next | d @ DebugCommand::Step => {
-          old_cmd = Some(d);
-          println!("{:?}", state);
+      DebugCommand::Step => {
+        old_cmd = Some(DebugCommand::Step);
+        if !state.step() { break; }
+        println!("{:?}", state);
+      }
+      DebugCommand::Next => {
+        old_cmd = Some(DebugCommand::Next);
+        if !state.next(&brks) { break; }
+        println!("{:?}", state);
+      }
+      DebugCommand::Cont => {
+        old_cmd = Some(DebugCommand::Cont);
+        if !state.cont(&brks) { break; }
+        println!("{:?}", state);
+      }
+      DebugCommand::Break(b) => {
+        old_cmd = Some(DebugCommand::Break(b));
+        println!("breakpoint set at {:04X}", b);
+        brks.push(b);
       }
       DebugCommand::Quit => break,
     }
   }
+  println!("final: \n  {:?}", state);
 }
 
 enum DebugCommand {
   Next,
   Step,
+  Cont,
+  Break(u16),
   Quit,
 }
 
@@ -61,8 +107,16 @@ fn get_dbg_cmd(old_cmd: Option<DebugCommand>) -> DebugCommand {
       "n" | "next" => return DebugCommand::Next,
       "s" | "step" => return DebugCommand::Step,
       "q" | "quit" => return DebugCommand::Quit,
+      "c" | "cont" | "continue" => return DebugCommand::Cont,
       "" => if let Some(old) = old_cmd { return old },
-      _ => {},
+      s if s.starts_with("b ") | s.starts_with("break ") => {
+        let space = s.rfind(' ').unwrap();
+        let n = s[space + 1..].parse::<u16>();
+        if let Ok(n) = n {
+          return DebugCommand::Break(n)
+        }
+      },
+      _ => {}
     }
     println!("?");
     s.clear();
@@ -223,7 +277,7 @@ impl Debug for State {
         self.memory[self.sp as usize], self.memory[(self.sp + 1) as usize],
         self.memory[(self.sp + 2) as usize])?;
     write!(f, "        ")?;
-    self.get_op(f)
+    self.print_op(f)
   }
 }
 
@@ -370,6 +424,27 @@ impl State {
     self.r.flags.set_s((tmp as i8) < 0);
     self.set8(into, tmp);
   }
+  pub fn pop_imm16(&mut self) -> u16 {
+    let lower = self.memory[self.sp as usize];
+    let upper = self.memory[(self.sp + 1) as usize];
+    self.sp += 2;
+    (upper as u16) << 8 | lower as u16
+  }
+  pub fn pop16(&mut self, into: Op16) {
+    let tmp = self.pop_imm16();
+    self.set16(into, tmp);
+  }
+  pub fn push_imm16(&mut self, from: u16) {
+    let lower = from as u8;
+    let upper = (from >> 8) as u8;
+    self.sp -= 2;
+    self.memory[self.sp as usize] = lower;
+    self.memory[(self.sp + 1) as usize] = upper;
+  }
+  pub fn push16(&mut self, from: Op16) {
+    let tmp = self.get16(from);
+    self.push_imm16(tmp);
+  }
 
   pub fn add16(&mut self, into: Op16, from: Op16) {
     let tmp = self.get16(into) as u32 + self.get16(from) as u32;
@@ -414,6 +489,31 @@ impl State {
     self.r.flags.set_s((tmp as i8) < 0);
 
     self.r.a = tmp;
+  }
+  pub fn and8(&mut self, from: Op8) {
+    let tmp = self.r.a & self.get8(from);
+    self.r.flags.set_z(tmp == 0);
+    self.r.flags.set_s((tmp as i8) < 0);
+    self.r.a = tmp;
+  }
+  pub fn xor8(&mut self, from: Op8) {
+    let tmp = self.r.a ^ self.get8(from);
+    self.r.flags.set_z(tmp == 0);
+    self.r.flags.set_s((tmp as i8) < 0);
+    self.r.a = tmp;
+  }
+  pub fn or8(&mut self, from: Op8) {
+    let tmp = self.r.a | self.get8(from);
+    self.r.flags.set_z(tmp == 0);
+    self.r.flags.set_s((tmp as i8) < 0);
+    self.r.a = tmp;
+  }
+  pub fn cp8(&mut self, from: Op8) {
+    let tmp = self.r.a as i16 - self.get8(from) as i16;
+    self.r.flags.set_c(tmp < 0);
+    let tmp = tmp as u8;
+    self.r.flags.set_z(tmp == 0);
+    self.r.flags.set_s((tmp as i8) < 0);
   }
 
   pub fn not(&mut self, arg: Op8) {
@@ -481,6 +581,26 @@ impl State {
       self.pc = self.pc_offset(label);
     }
   }
+  pub fn jp(&mut self, f: Flag) {
+    let label = self.get_imm16();
+    if self.flag(f) {
+      self.pc = label;
+    }
+  }
+  pub fn call(&mut self, f: Flag) {
+    let label = self.get_imm16();
+    if self.flag(f) {
+      let tmp = self.pc;
+      self.push_imm16(tmp);
+      self.pc = label;
+    }
+  }
+  pub fn ret(&mut self, f: Flag) {
+    if self.flag(f) {
+      let ret_label = self.pop_imm16();
+      self.pc = ret_label;
+    }
+  }
 
   pub fn ex_af(&mut self) {
     std::mem::swap(&mut self.r.a, &mut self.rp.a);
@@ -495,8 +615,91 @@ impl State {
   pub fn halt(&mut self) {}
 }
 
+impl State {
+  pub fn is_ret_op(op: u8) -> bool {
+    op == 0xC9 || // RET
+      op == 0xC0 || // RET NZ
+      op == 0xC8 || // RET Z
+      op == 0xD0 || // RET NC
+      op == 0xD8 || // RET C
+      op == 0xE0 || // RET PO
+      op == 0xE8 || // RET PE
+      op == 0xF0 || // RET P
+      op == 0xF8    // RET M
+  }
+  pub fn ret_op_flag(op: u8) -> Flag {
+    match op {
+      0xC9 => Flag::Uncond,  // RET
+      0xC0 => Flag::Nonzero, // RET NZ
+      0xC8 => Flag::Zero,    // RET Z
+      0xD0 => Flag::NoCarry, // RET NC
+      0xD8 => Flag::Carry,   // RET C
+
+      0xE0 => unimplemented!(), // Flag::ParOdd,  // RET PO
+      0xE8 => unimplemented!(), // Flag::ParEven, // RET PE
+      0xF0 => unimplemented!(), // Flag::Plus,    // RET P
+      0xF8 => unimplemented!(), // Flag::Minus,   // RET M
+      n => panic!("unreachable op: {}", n),
+    }
+  }
+  pub fn is_call_op(op: u8) -> bool {
+    op == 0xCD || // CALL
+      op == 0xC4 || // CALL NZ
+      op == 0xCC || // CALL Z
+      op == 0xD4 || // CALL NC
+      op == 0xDC || // CALL C
+      op == 0xE4 || // CALL PO
+      op == 0xEC || // CALL PE
+      op == 0xF4 || // CALL P
+      op == 0xFC    // CALL M
+  }
+}
+
 // at the end because lots of lines
 impl State {
+  // returns true if the machine should continue
+  // returns false if it shut off
+  pub fn cont(&mut self, brks: &[u16]) -> bool {
+    loop {
+      if !self.step() {
+        return false;
+      }
+
+      if brks.into_iter().find(|n| self.pc == **n).is_some() {
+        return true;
+      }
+    }
+  }
+
+  // returns true if the machine should continue
+  // returns false if it should shut off
+  pub fn next(&mut self, brks: &[u16]) -> bool {
+    if Self::is_call_op(self.peek_imm8(0)) {
+      if !self.step() {
+        return false;
+      }
+      loop {
+        if brks.into_iter().find(|n| self.pc == **n).is_some() {
+          return true;
+        }
+
+        if Self::is_ret_op(self.peek_imm8(0)) { // RET CC
+          let flag = Self::ret_op_flag(self.peek_imm8(0));
+          self.step();
+          if self.flag(flag) {
+            return true;
+          }
+        }
+
+        if !self.step() {
+          return false;
+        }
+      }
+    } else {
+      self.step()
+    }
+  }
+
   // returns true if the machine should continue
   // returns false if it shut off
   pub fn step(&mut self) -> bool {
@@ -675,114 +878,114 @@ impl State {
       0x9E => self.sbc8(Op8::HLd),              // SBC (HL)
       0x9F => self.sbc8(Op8::A),                // SBC A
 
-      0xA0 => self.unimplemented_inst(),
-      0xA1 => self.unimplemented_inst(),
-      0xA2 => self.unimplemented_inst(),
-      0xA3 => self.unimplemented_inst(),
-      0xA4 => self.unimplemented_inst(),
-      0xA5 => self.unimplemented_inst(),
-      0xA6 => self.unimplemented_inst(),
-      0xA7 => self.unimplemented_inst(),
-      0xA8 => self.unimplemented_inst(),
-      0xA9 => self.unimplemented_inst(),
-      0xAA => self.unimplemented_inst(),
-      0xAB => self.unimplemented_inst(),
-      0xAC => self.unimplemented_inst(),
-      0xAD => self.unimplemented_inst(),
-      0xAE => self.unimplemented_inst(),
-      0xAF => self.unimplemented_inst(),
+      0xA0 => self.and8(Op8::B),                // AND B
+      0xA1 => self.and8(Op8::C),                // AND C
+      0xA2 => self.and8(Op8::D),                // AND D
+      0xA3 => self.and8(Op8::E),                // AND E
+      0xA4 => self.and8(Op8::H),                // AND H
+      0xA5 => self.and8(Op8::L),                // AND L
+      0xA6 => self.and8(Op8::HLd),              // AND (HL)
+      0xA7 => self.and8(Op8::A),                // AND A
+      0xA8 => self.xor8(Op8::B),                // XOR B
+      0xA9 => self.xor8(Op8::C),                // XOR C
+      0xAA => self.xor8(Op8::D),                // XOR D
+      0xAB => self.xor8(Op8::E),                // XOR E
+      0xAC => self.xor8(Op8::H),                // XOR H
+      0xAD => self.xor8(Op8::L),                // XOR L
+      0xAE => self.xor8(Op8::HLd),              // XOR (HL)
+      0xAF => self.xor8(Op8::A),                // XOR A
 
-      0xB0 => self.unimplemented_inst(),
-      0xB1 => self.unimplemented_inst(),
-      0xB2 => self.unimplemented_inst(),
-      0xB3 => self.unimplemented_inst(),
-      0xB4 => self.unimplemented_inst(),
-      0xB5 => self.unimplemented_inst(),
-      0xB6 => self.unimplemented_inst(),
-      0xB7 => self.unimplemented_inst(),
-      0xB8 => self.unimplemented_inst(),
-      0xB9 => self.unimplemented_inst(),
-      0xBA => self.unimplemented_inst(),
-      0xBB => self.unimplemented_inst(),
-      0xBC => self.unimplemented_inst(),
-      0xBD => self.unimplemented_inst(),
-      0xBE => self.unimplemented_inst(),
-      0xBF => self.unimplemented_inst(),
+      0xB0 => self.or8(Op8::B),                 // OR B
+      0xB1 => self.or8(Op8::B),                 // OR C
+      0xB2 => self.or8(Op8::B),                 // OR D
+      0xB3 => self.or8(Op8::B),                 // OR E
+      0xB4 => self.or8(Op8::B),                 // OR H
+      0xB5 => self.or8(Op8::B),                 // OR L
+      0xB6 => self.or8(Op8::B),                 // OR (HL)
+      0xB7 => self.or8(Op8::B),                 // OR A
+      0xB8 => self.cp8(Op8::B),                 // CP B
+      0xB9 => self.cp8(Op8::C),                 // CP C
+      0xBA => self.cp8(Op8::D),                 // CP D
+      0xBB => self.cp8(Op8::E),                 // CP E
+      0xBC => self.cp8(Op8::H),                 // CP H
+      0xBD => self.cp8(Op8::L),                 // CP L
+      0xBE => self.cp8(Op8::HLd),               // CP (HL)
+      0xBF => self.cp8(Op8::A),                 // CP A
 
-      0xC0 => self.unimplemented_inst(),
-      0xC1 => self.unimplemented_inst(),
-      0xC2 => self.unimplemented_inst(),
-      0xC3 => self.unimplemented_inst(),
-      0xC4 => self.unimplemented_inst(),
-      0xC5 => self.unimplemented_inst(),
-      0xC6 => self.unimplemented_inst(),
-      0xC7 => self.unimplemented_inst(),
-      0xC8 => self.unimplemented_inst(),
-      0xC9 => self.unimplemented_inst(),
-      0xCA => self.unimplemented_inst(),
+      0xC0 => self.ret(Flag::Nonzero),          // RET NZ
+      0xC1 => self.pop16(Op16::BC),             // POP BC
+      0xC2 => self.jp(Flag::Nonzero),           // JP NZ, {:04X}
+      0xC3 => self.jp(Flag::Uncond),            // JP {:04X}
+      0xC4 => self.call(Flag::Nonzero),         // CALL NZ, {:04X}
+      0xC5 => self.push16(Op16::BC),            // PUSH BC
+      0xC6 => self.add8(Op8::Imm),              // ADD A, {:02X}
+      0xC7 => self.unimplemented_inst(),        // RST 00h
+      0xC8 => self.ret(Flag::Zero),             // RET Z
+      0xC9 => self.ret(Flag::Uncond),           // RET
+      0xCA => self.jp(Flag::Zero),              // JP Z, {:04X}
       0xCB => self.unimplemented_inst(),
-      0xCC => self.unimplemented_inst(),
-      0xCD => self.unimplemented_inst(),
-      0xCE => self.unimplemented_inst(),
-      0xCF => self.unimplemented_inst(),
+      0xCC => self.call(Flag::Zero),            // CALL Z, {:04X}
+      0xCD => self.call(Flag::Uncond),          // CALL {:04X}
+      0xCE => self.adc8(Op8::Imm),              // ADC A, {:02X}
+      0xCF => self.unimplemented_inst(),        // RST 08h
 
-      0xD0 => self.unimplemented_inst(),
-      0xD1 => self.unimplemented_inst(),
-      0xD2 => self.unimplemented_inst(),
-      0xD3 => self.unimplemented_inst(),
-      0xD4 => self.unimplemented_inst(),
-      0xD5 => self.unimplemented_inst(),
-      0xD6 => self.unimplemented_inst(),
-      0xD7 => self.unimplemented_inst(),
-      0xD8 => self.unimplemented_inst(),
-      0xD9 => self.unimplemented_inst(),
-      0xDA => self.unimplemented_inst(),
-      0xDB => self.unimplemented_inst(),
-      0xDC => self.unimplemented_inst(),
+      0xD0 => self.unimplemented_inst(),        // RET NC
+      0xD1 => self.unimplemented_inst(),        // POP DE
+      0xD2 => self.unimplemented_inst(),        // JP NC, {:04X}
+      0xD3 => self.unimplemented_inst(),        // OUT (N), A
+      0xD4 => self.unimplemented_inst(),        // CALL NC, {:04X}
+      0xD5 => self.unimplemented_inst(),        // PUSH DE
+      0xD6 => self.unimplemented_inst(),        // SUB {:02X}
+      0xD7 => self.unimplemented_inst(),        // RST 10h
+      0xD8 => self.unimplemented_inst(),        // RET C
+      0xD9 => self.unimplemented_inst(),        // EXX
+      0xDA => self.unimplemented_inst(),        // JP C, {:04X}
+      0xDB => self.unimplemented_inst(),        // IN A, (N)
+      0xDC => self.unimplemented_inst(),        // CALL C, {:04X}
       0xDD => self.unimplemented_inst(),
-      0xDE => self.unimplemented_inst(),
-      0xDF => self.unimplemented_inst(),
+      0xDE => self.unimplemented_inst(),        // SBC A, {:02X}
+      0xDF => self.unimplemented_inst(),        // RST 18h
 
-      0xE0 => self.unimplemented_inst(),
-      0xE1 => self.unimplemented_inst(),
-      0xE2 => self.unimplemented_inst(),
-      0xE3 => self.unimplemented_inst(),
-      0xE4 => self.unimplemented_inst(),
-      0xE5 => self.unimplemented_inst(),
-      0xE6 => self.unimplemented_inst(),
-      0xE7 => self.unimplemented_inst(),
-      0xE8 => self.unimplemented_inst(),
-      0xE9 => self.unimplemented_inst(),
-      0xEA => self.unimplemented_inst(),
+      0xE0 => self.unimplemented_inst(),        // RET PO
+      0xE1 => self.unimplemented_inst(),        // POP HL
+      0xE2 => self.unimplemented_inst(),        // JP PO, {:04X}
+      0xE3 => self.unimplemented_inst(),        // EX (SP), HL
+      0xE4 => self.unimplemented_inst(),        // CALL PO, {:04X}
+      0xE5 => self.unimplemented_inst(),        // PUSH HL
+      0xE6 => self.unimplemented_inst(),        // AND {:02X}
+      0xE7 => self.unimplemented_inst(),        // RST 20h
+      0xE8 => self.unimplemented_inst(),        // RET PE
+      0xE9 => self.unimplemented_inst(),        // JP (HL)
+      0xEA => self.unimplemented_inst(),        // JP PE, {:04X}
       0xEB => self.ex_de_hl(),                  // EX DE, HL
-      0xEC => self.unimplemented_inst(),
+      0xEC => self.unimplemented_inst(),        // CALL PE, {:04X}
       0xED => self.unimplemented_inst(),
-      0xEE => self.unimplemented_inst(),
-      0xEF => self.unimplemented_inst(),
+      0xEE => self.unimplemented_inst(),        // XOR {:02X}
+      0xEF => self.unimplemented_inst(),        // RST 28h
 
-      0xF0 => self.unimplemented_inst(),
-      0xF1 => self.unimplemented_inst(),
-      0xF2 => self.unimplemented_inst(),
-      0xF3 => self.unimplemented_inst(),
-      0xF4 => self.unimplemented_inst(),
-      0xF5 => self.unimplemented_inst(),
-      0xF6 => self.unimplemented_inst(),
-      0xF7 => self.unimplemented_inst(),
-      0xF8 => self.unimplemented_inst(),
-      0xF9 => self.unimplemented_inst(),
-      0xFA => self.unimplemented_inst(),
-      0xFB => self.unimplemented_inst(),
-      0xFC => self.unimplemented_inst(),
+      0xF0 => self.unimplemented_inst(),        // RET P
+      0xF1 => self.unimplemented_inst(),        // POP AF
+      0xF2 => self.unimplemented_inst(),        // JP P, {:04X}
+      0xF3 => self.unimplemented_inst(),        // DI
+      0xF4 => self.unimplemented_inst(),        // CALL P, {:04X}
+      0xF5 => self.unimplemented_inst(),        // PUSH AF
+      0xF6 => self.unimplemented_inst(),        // OR {:02X}
+      0xF7 => self.unimplemented_inst(),        // RST 30h
+      0xF8 => self.unimplemented_inst(),        // RET M
+      0xF9 => self.unimplemented_inst(),        // LD SP, HL
+      0xFA => self.unimplemented_inst(),        // JP M, {:04X}
+      0xFB => self.unimplemented_inst(),        // EI
+      0xFC => self.unimplemented_inst(),        // CALL M, {:04X}
       0xFD => self.unimplemented_inst(),
-      0xFE => self.unimplemented_inst(),
-      0xFF => self.unimplemented_inst(),
+      0xFE => self.unimplemented_inst(),        // CP {:02X}
+      0xFF => self.unimplemented_inst(),        // RST 38h
       _ => unreachable!(),
     }
 
     true
   }
 
-  pub fn get_op(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+  pub fn print_op(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
     let opcode = self.peek_imm8(0);
     match opcode {
       0x00 => write!(f, "NOP"),
@@ -955,107 +1158,107 @@ impl State {
       0x9E => write!(f, "SBC (HL)"),
       0x9F => write!(f, "SBC A"),
 
-      0xA0 => write!(f, "unimplemented"),
-      0xA1 => write!(f, "unimplemented"),
-      0xA2 => write!(f, "unimplemented"),
-      0xA3 => write!(f, "unimplemented"),
-      0xA4 => write!(f, "unimplemented"),
-      0xA5 => write!(f, "unimplemented"),
-      0xA6 => write!(f, "unimplemented"),
-      0xA7 => write!(f, "unimplemented"),
-      0xA8 => write!(f, "unimplemented"),
-      0xA9 => write!(f, "unimplemented"),
-      0xAA => write!(f, "unimplemented"),
-      0xAB => write!(f, "unimplemented"),
-      0xAC => write!(f, "unimplemented"),
-      0xAD => write!(f, "unimplemented"),
-      0xAE => write!(f, "unimplemented"),
-      0xAF => write!(f, "unimplemented"),
+      0xA0 => write!(f, "AND B"),
+      0xA1 => write!(f, "AND C"),
+      0xA2 => write!(f, "AND D"),
+      0xA3 => write!(f, "AND E"),
+      0xA4 => write!(f, "AND H"),
+      0xA5 => write!(f, "AND L"),
+      0xA6 => write!(f, "AND (HL)"),
+      0xA7 => write!(f, "AND A"),
+      0xA8 => write!(f, "XOR B"),
+      0xA9 => write!(f, "XOR C"),
+      0xAA => write!(f, "XOR D"),
+      0xAB => write!(f, "XOR E"),
+      0xAC => write!(f, "XOR H"),
+      0xAD => write!(f, "XOR L"),
+      0xAE => write!(f, "XOR (HL)"),
+      0xAF => write!(f, "XOR A"),
 
-      0xB0 => write!(f, "unimplemented"),
-      0xB1 => write!(f, "unimplemented"),
-      0xB2 => write!(f, "unimplemented"),
-      0xB3 => write!(f, "unimplemented"),
-      0xB4 => write!(f, "unimplemented"),
-      0xB5 => write!(f, "unimplemented"),
-      0xB6 => write!(f, "unimplemented"),
-      0xB7 => write!(f, "unimplemented"),
-      0xB8 => write!(f, "unimplemented"),
-      0xB9 => write!(f, "unimplemented"),
-      0xBA => write!(f, "unimplemented"),
-      0xBB => write!(f, "unimplemented"),
-      0xBC => write!(f, "unimplemented"),
-      0xBD => write!(f, "unimplemented"),
-      0xBE => write!(f, "unimplemented"),
-      0xBF => write!(f, "unimplemented"),
+      0xB0 => write!(f, "OR B"),
+      0xB1 => write!(f, "OR C"),
+      0xB2 => write!(f, "OR D"),
+      0xB3 => write!(f, "OR E"),
+      0xB4 => write!(f, "OR H"),
+      0xB5 => write!(f, "OR L"),
+      0xB6 => write!(f, "OR (HL)"),
+      0xB7 => write!(f, "OR A"),
+      0xB8 => write!(f, "CP B"),
+      0xB9 => write!(f, "CP C"),
+      0xBA => write!(f, "CP D"),
+      0xBB => write!(f, "CP E"),
+      0xBC => write!(f, "CP H"),
+      0xBD => write!(f, "CP L"),
+      0xBE => write!(f, "CP (HL)"),
+      0xBF => write!(f, "CP A"),
 
-      0xC0 => write!(f, "unimplemented"),
-      0xC1 => write!(f, "unimplemented"),
-      0xC2 => write!(f, "unimplemented"),
-      0xC3 => write!(f, "unimplemented"),
-      0xC4 => write!(f, "unimplemented"),
-      0xC5 => write!(f, "unimplemented"),
-      0xC6 => write!(f, "unimplemented"),
-      0xC7 => write!(f, "unimplemented"),
-      0xC8 => write!(f, "unimplemented"),
-      0xC9 => write!(f, "unimplemented"),
-      0xCA => write!(f, "unimplemented"),
-      0xCB => write!(f, "unimplemented"),
-      0xCC => write!(f, "unimplemented"),
-      0xCD => write!(f, "unimplemented"),
-      0xCE => write!(f, "unimplemented"),
-      0xCF => write!(f, "unimplemented"),
+      0xC0 => write!(f, "RET NZ"),
+      0xC1 => write!(f, "POP BC"),
+      0xC2 => write!(f, "JP NZ, {:04X}", self.peek_imm16(1)),
+      0xC3 => write!(f, "JP {:04X}", self.peek_imm16(1)),
+      0xC4 => write!(f, "CALL NZ, {:04X}", self.peek_imm16(1)),
+      0xC5 => write!(f, "PUSH BC"),
+      0xC6 => write!(f, "ADD A, {:02X}", self.peek_imm8(1)),
+      0xC7 => write!(f, "RST 00h"),
+      0xC8 => write!(f, "RET Z"),
+      0xC9 => write!(f, "RET"),
+      0xCA => write!(f, "JP Z, {:04X}", self.peek_imm16(1)),
+      0xCB => write!(f, "unimplemented"),// self.get_bit_op(f),
+      0xCC => write!(f, "CALL Z, {:04X}", self.peek_imm16(1)),
+      0xCD => write!(f, "CALL {:04X}", self.peek_imm16(1)),
+      0xCE => write!(f, "ADC A, {:02X}", self.peek_imm8(1)),
+      0xCF => write!(f, "RST 08h"),
 
-      0xD0 => write!(f, "unimplemented"),
-      0xD1 => write!(f, "unimplemented"),
-      0xD2 => write!(f, "unimplemented"),
-      0xD3 => write!(f, "unimplemented"),
-      0xD4 => write!(f, "unimplemented"),
-      0xD5 => write!(f, "unimplemented"),
-      0xD6 => write!(f, "unimplemented"),
-      0xD7 => write!(f, "unimplemented"),
-      0xD8 => write!(f, "unimplemented"),
-      0xD9 => write!(f, "unimplemented"),
-      0xDA => write!(f, "unimplemented"),
-      0xDB => write!(f, "unimplemented"),
-      0xDC => write!(f, "unimplemented"),
-      0xDD => write!(f, "unimplemented"),
-      0xDE => write!(f, "unimplemented"),
-      0xDF => write!(f, "unimplemented"),
+      0xD0 => write!(f, "RET NC"),
+      0xD1 => write!(f, "POP DE"),
+      0xD2 => write!(f, "JP NC, {:04X}", self.peek_imm16(1)),
+      0xD3 => write!(f, "unimplemented"), //write!(f, "OUT ({:02X}), A", self.peek_imm8(1)),
+      0xD4 => write!(f, "CALL NC, {:04X}", self.peek_imm16(1)),
+      0xD5 => write!(f, "PUSH DE"),
+      0xD6 => write!(f, "SUB {:02X}", self.peek_imm8(1)),
+      0xD7 => write!(f, "RST 10h"),
+      0xD8 => write!(f, "RET C"),
+      0xD9 => write!(f, "EXX"),
+      0xDA => write!(f, "JP C, {:04X}", self.peek_imm16(1)),
+      0xDB => write!(f, "unimplemented"), //write!(f, "IN A, {:02X}", self.peek_imm8(1)),
+      0xDC => write!(f, "CALL C, {:04X}", self.peek_imm16(1)),
+      0xDD => write!(f, "unimplemented"), // self.print_ix_op(f),
+      0xDE => write!(f, "SBC A, {:02X}", self.peek_imm8(1)),
+      0xDF => write!(f, "RST 18h"),
 
-      0xE0 => write!(f, "unimplemented"),
-      0xE1 => write!(f, "unimplemented"),
-      0xE2 => write!(f, "unimplemented"),
-      0xE3 => write!(f, "unimplemented"),
-      0xE4 => write!(f, "unimplemented"),
-      0xE5 => write!(f, "unimplemented"),
-      0xE6 => write!(f, "unimplemented"),
-      0xE7 => write!(f, "unimplemented"),
-      0xE8 => write!(f, "unimplemented"),
-      0xE9 => write!(f, "unimplemented"),
-      0xEA => write!(f, "unimplemented"),
+      0xE0 => write!(f, "RET PO"),
+      0xE1 => write!(f, "POP HL"),
+      0xE2 => write!(f, "JP PO, {:04X}", self.peek_imm16(1)),
+      0xE3 => write!(f, "EX (SP), HL"),
+      0xE4 => write!(f, "CALL PO, {:04X}", self.peek_imm16(1)),
+      0xE5 => write!(f, "PUSH HL"),
+      0xE6 => write!(f, "AND {:02X}", self.peek_imm8(1)),
+      0xE7 => write!(f, "RST 20h"),
+      0xE8 => write!(f, "RET PE"),
+      0xE9 => write!(f, "JP (HL)"),
+      0xEA => write!(f, "JP PE, {:04X}", self.peek_imm16(1)),
       0xEB => write!(f, "EX DE, HL"),
-      0xEC => write!(f, "unimplemented"),
-      0xED => write!(f, "unimplemented"),
-      0xEE => write!(f, "unimplemented"),
-      0xEF => write!(f, "unimplemented"),
+      0xEC => write!(f, "CALL PE, {:04X}", self.peek_imm16(1)),
+      0xED => write!(f, "unimplemented"), // self.print_extd_op(f),
+      0xEE => write!(f, "XOR {:02X}", self.peek_imm8(1)),
+      0xEF => write!(f, "RST 28h"),
 
-      0xF0 => write!(f, "unimplemented"),
-      0xF1 => write!(f, "unimplemented"),
-      0xF2 => write!(f, "unimplemented"),
-      0xF3 => write!(f, "unimplemented"),
-      0xF4 => write!(f, "unimplemented"),
-      0xF5 => write!(f, "unimplemented"),
-      0xF6 => write!(f, "unimplemented"),
-      0xF7 => write!(f, "unimplemented"),
-      0xF8 => write!(f, "unimplemented"),
-      0xF9 => write!(f, "unimplemented"),
-      0xFA => write!(f, "unimplemented"),
-      0xFB => write!(f, "unimplemented"),
-      0xFC => write!(f, "unimplemented"),
-      0xFD => write!(f, "unimplemented"),
-      0xFE => write!(f, "unimplemented"),
-      0xFF => write!(f, "unimplemented"),
+      0xF0 => write!(f, "RET P"),
+      0xF1 => write!(f, "POP AF"),
+      0xF2 => write!(f, "JP P, {:04X}", self.peek_imm16(1)),
+      0xF3 => write!(f, "DI"),
+      0xF4 => write!(f, "CALL P, {:04X}", self.peek_imm16(1)),
+      0xF5 => write!(f, "PUSH AF"),
+      0xF6 => write!(f, "OR {:02X}", self.peek_imm8(1)),
+      0xF7 => write!(f, "RST 30h"),
+      0xF8 => write!(f, "RET M"),
+      0xF9 => write!(f, "LD SP, HL"),
+      0xFA => write!(f, "JP M, {:04X}", self.peek_imm16(1)),
+      0xFB => write!(f, "EI"),
+      0xFC => write!(f, "CALL M, {:04X}", self.peek_imm16(1)),
+      0xFD => write!(f, "unimplemented"), // self.print_iy_op(f),
+      0xFE => write!(f, "CP {:02X}", self.peek_imm8(1)),
+      0xFF => write!(f, "RST 38h"),
       _ => unreachable!(),
     }
   }
