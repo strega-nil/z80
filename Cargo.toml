@@ -3,6 +3,7 @@ name = "retro"
 version = "0.1.0"
 authors = ["Nicole Mazzuca <npmazzuca@gmail.com>"]
 license = "MIT/Apache-2.0"
+description = "Basically just sitting on the name"
 
 [dependencies]
 rustyline = "1.0.0"
