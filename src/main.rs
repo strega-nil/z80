@@ -1,7 +1,11 @@
 // TODO(ubsan): p flag
 // TODO(ubsan): h flag
 // TODO(ubsan): n flag
-#![feature(box_syntax, question_mark)]
+
+extern crate rustyline;
+//extern crate clap;
+
+//use clap::{App, Arg};
 
 // CALLING CONVENTION
 // first, u16s get passed in BC, DE, HL in that order
@@ -20,45 +24,15 @@
 // primes are saved
 // IX and IY are saved
 fn main() {
-  let mut state = State::with_memory(&[
-      0x3E, 0x05,       // LD A, 5
-      0xCD, 0x0A, 0x00, // CALL fib
-      0x76,             // HALT
-      0x00,             // NOP
-      0x00,             // NOP
-      0x00,             // NOP
-      0x00,             // NOP
-
-
-    // PROC fib ; (n: u8(a)) -> u8
-      0x47,             // LD B, A
-      0x16, 0x01,       // LD D, 01
-      0x26, 0x00,       // LD H, 00
-      0x40,             // LD B, B
-      0xC8,             // RET Z
-      0x05,             // DEC B
-      0x28, 10,         // JR Z, fib__end_1
-
-      // fib__loop:
-      0x7C,             // LD A, H
-      0x82,             // ADD A, D
-      0x67,             // LD H, A
-      0xEB,             // EX DE, HL
-      0x10, -4i8 as u8, // DJNZ fib__loop
-
-      0xC9,             // RET
-
-      // fib__end_1:
-      0x3E, 0x01,       // LD A, 1
-      0xC9,             // RET
-    // ENDP fib
-  ]);
+  let mut state = State::zeroed();
 
   let mut brks = Vec::with_capacity(20);
   let mut old_cmd = None;
   println!("{:?}", state);
+
+  let mut rl = Readline::new();
   loop {
-    match get_dbg_cmd(old_cmd) {
+    match rl.get_dbg_cmd(old_cmd) {
       DebugCommand::Step => {
         old_cmd = Some(DebugCommand::Step);
         if !state.step() { break; }
@@ -82,7 +56,7 @@ fn main() {
       DebugCommand::Quit => break,
     }
   }
-  println!("final: \n  {:?}", state);
+  println!("final: \n{:?}", state);
 }
 
 enum DebugCommand {
@@ -93,40 +67,41 @@ enum DebugCommand {
   Quit,
 }
 
-fn get_dbg_cmd(old_cmd: Option<DebugCommand>) -> DebugCommand {
-  use std::io::{Write, BufRead};
+struct Readline(rustyline::Editor<()>);
 
-  let mut s = String::new();
-  let stdin = std::io::stdin();
-  let mut stdin = stdin.lock();
-  loop {
-    print!("> ");
-    std::io::stdout().flush().unwrap();
-    stdin.read_line(&mut s).unwrap();
-    match s.trim() {
-      "n" | "next" => return DebugCommand::Next,
-      "s" | "step" => return DebugCommand::Step,
-      "q" | "quit" => return DebugCommand::Quit,
-      "c" | "cont" | "continue" => return DebugCommand::Cont,
-      "" => if let Some(old) = old_cmd { return old },
-      s if s.starts_with("b ") | s.starts_with("break ") => {
-        let space = s.rfind(' ').unwrap();
-        let n = s[space + 1..].parse::<u16>();
-        if let Ok(n) = n {
-          return DebugCommand::Break(n)
-        }
-      },
-      _ => {}
+impl Readline {
+  fn new() -> Self {
+    Readline(rustyline::Editor::new())
+  }
+
+  fn get_dbg_cmd(&mut self, old_cmd: Option<DebugCommand>) -> DebugCommand {
+    loop {
+      let s = self.0.readline("> ").unwrap();
+      self.0.add_history_entry(&s);
+      match s.trim() {
+        "n" | "next" => return DebugCommand::Next,
+        "s" | "step" => return DebugCommand::Step,
+        "q" | "quit" => return DebugCommand::Quit,
+        "c" | "cont" | "continue" => return DebugCommand::Cont,
+        "" => if let Some(old) = old_cmd { return old },
+        s if s.starts_with("b ") | s.starts_with("break ") => {
+          let space = s.rfind(' ').unwrap();
+          let n = s[space + 1..].parse::<u16>();
+          if let Ok(n) = n {
+            return DebugCommand::Break(n)
+          }
+        },
+        _ => {}
+      }
+      println!("?");
     }
-    println!("?");
-    s.clear();
   }
 }
 
 use std::fmt::{self, Debug, Formatter};
-pub struct Flags(u8);
+pub struct Flags(pub u8);
 impl Flags {
-  pub fn zeroed() -> Self { Flags(0) }
+  pub fn new() -> Self { Flags(0) }
 
   pub fn s(&self) -> bool { self.0 >> 7 == 1 }
   pub fn z(&self) -> bool { self.0 >> 6 == 1 }
@@ -177,6 +152,19 @@ pub struct Regs {
 }
 
 impl Regs {
+  fn new() -> Self {
+    Regs {
+      a: 0,
+      b: 0,
+      c: 0,
+      d: 0,
+      e: 0,
+      h: 0,
+      l: 0,
+      flags: Flags::new(),
+    }
+  }
+
   fn hl(&self) -> u16 {
     (self.h as u16) << 8 | self.l as u16
   }
@@ -283,11 +271,22 @@ impl Debug for State {
 
 impl State {
   pub fn zeroed() -> Self {
-    use std::{mem, ptr};
-    unsafe {
-      let mut ret: Self = mem::zeroed();
-      ptr::write(&mut ret.memory, box [0; std::u16::MAX as usize + 1]);
-      ret
+    let memory = unsafe {
+      // should use box syntax, when it's stabilized
+      #[allow(non_upper_case_globals)]
+      const size: usize = std::u16::MAX as usize + 1;
+      let mut tmp = vec![0; size];
+      let ptr = tmp.as_mut_ptr();
+      std::mem::forget(tmp);
+      Box::from_raw(ptr as *mut [u8; size])
+    };
+    State {
+      r: Regs::new(), // r
+      rp: Regs::new(), // r'
+      sp: 0,
+      pc: 0,
+      memory: memory,
+      _enable_int: 0,
     }
   }
 
@@ -356,7 +355,11 @@ impl State {
 
   pub fn get16(&mut self, op: Op16) -> u16 {
     match op {
-      Op16::AF => unimplemented!(),
+      Op16::AF => {
+        let upper = self.r.a;
+        let lower = self.r.flags.0;
+        (upper as u16) << 8 | lower as u16
+      }
       Op16::BC => self.r.bc(),
       Op16::DE => self.r.de(),
       Op16::HL => self.r.hl(),
@@ -372,7 +375,10 @@ impl State {
   }
   pub fn set16(&mut self, op: Op16, to: u16) {
     match op {
-      Op16::AF => unimplemented!(),
+      Op16::AF => {
+        self.r.a = (to >> 8) as u8;
+        self.r.flags.0 = to as u8;
+      }
       Op16::BC => self.r.set_bc(to),
       Op16::DE => self.r.set_de(to),
       Op16::HL => self.r.set_hl(to),
@@ -612,6 +618,20 @@ impl State {
     std::mem::swap(&mut self.r.e, &mut self.r.l);
   }
 
+  pub fn ex_spd_hl(&mut self) {
+    std::mem::swap(&mut self.r.l, &mut self.memory[self.sp as usize]);
+    std::mem::swap(&mut self.r.h, &mut self.memory[(self.sp + 1) as usize]);
+  }
+
+  pub fn exx(&mut self) {
+    std::mem::swap(&mut self.r.b, &mut self.rp.b);
+    std::mem::swap(&mut self.r.c, &mut self.rp.c);
+    std::mem::swap(&mut self.r.d, &mut self.rp.d);
+    std::mem::swap(&mut self.r.e, &mut self.rp.e);
+    std::mem::swap(&mut self.r.h, &mut self.rp.h);
+    std::mem::swap(&mut self.r.l, &mut self.rp.l);
+  }
+
   pub fn halt(&mut self) {}
 }
 
@@ -766,7 +786,7 @@ impl State {
       0x37 => self.r.flags.set_c(true),         // SCF
       0x38 => self.jr(Flag::Carry),             // JR C, N
       0x39 => self.add16(Op16::HL, Op16::SP),   // ADD HL, SP
-      0x3A => self.add16(Op16::HL, Op16::Immd), // ADD HL, (NN)
+      0x3A => self.ld8(Op8::A, Op8::Immd),      // LD A, (NN)
       0x3B => self.dec16(Op16::SP),             // DEC SP
       0x3C => self.inc8(Op8::A),                // INC A
       0x3D => self.dec8(Op8::A),                // DEC A
@@ -914,70 +934,70 @@ impl State {
 
       0xC0 => self.ret(Flag::Nonzero),          // RET NZ
       0xC1 => self.pop16(Op16::BC),             // POP BC
-      0xC2 => self.jp(Flag::Nonzero),           // JP NZ, {:04X}
-      0xC3 => self.jp(Flag::Uncond),            // JP {:04X}
-      0xC4 => self.call(Flag::Nonzero),         // CALL NZ, {:04X}
+      0xC2 => self.jp(Flag::Nonzero),           // JP NZ, NN
+      0xC3 => self.jp(Flag::Uncond),            // JP NN
+      0xC4 => self.call(Flag::Nonzero),         // CALL NZ, NN
       0xC5 => self.push16(Op16::BC),            // PUSH BC
-      0xC6 => self.add8(Op8::Imm),              // ADD A, {:02X}
+      0xC6 => self.add8(Op8::Imm),              // ADD A, N
       0xC7 => self.unimplemented_inst(),        // RST 00h
       0xC8 => self.ret(Flag::Zero),             // RET Z
       0xC9 => self.ret(Flag::Uncond),           // RET
-      0xCA => self.jp(Flag::Zero),              // JP Z, {:04X}
+      0xCA => self.jp(Flag::Zero),              // JP Z, NN
       0xCB => self.unimplemented_inst(),
-      0xCC => self.call(Flag::Zero),            // CALL Z, {:04X}
-      0xCD => self.call(Flag::Uncond),          // CALL {:04X}
-      0xCE => self.adc8(Op8::Imm),              // ADC A, {:02X}
+      0xCC => self.call(Flag::Zero),            // CALL Z, NN
+      0xCD => self.call(Flag::Uncond),          // CALL, NN
+      0xCE => self.adc8(Op8::Imm),              // ADC A, N
       0xCF => self.unimplemented_inst(),        // RST 08h
 
-      0xD0 => self.unimplemented_inst(),        // RET NC
-      0xD1 => self.unimplemented_inst(),        // POP DE
-      0xD2 => self.unimplemented_inst(),        // JP NC, {:04X}
+      0xD0 => self.ret(Flag::NoCarry),          // RET NC
+      0xD1 => self.pop16(Op16::DE),             // POP DE
+      0xD2 => self.jp(Flag::NoCarry),           // JP NC, NN
       0xD3 => self.unimplemented_inst(),        // OUT (N), A
-      0xD4 => self.unimplemented_inst(),        // CALL NC, {:04X}
-      0xD5 => self.unimplemented_inst(),        // PUSH DE
-      0xD6 => self.unimplemented_inst(),        // SUB {:02X}
+      0xD4 => self.call(Flag::NoCarry),         // CALL NC, NN
+      0xD5 => self.push16(Op16::DE),            // PUSH DE
+      0xD6 => self.sub8(Op8::Imm),              // SUB N
       0xD7 => self.unimplemented_inst(),        // RST 10h
-      0xD8 => self.unimplemented_inst(),        // RET C
-      0xD9 => self.unimplemented_inst(),        // EXX
-      0xDA => self.unimplemented_inst(),        // JP C, {:04X}
+      0xD8 => self.ret(Flag::Carry),            // RET C
+      0xD9 => self.exx(),                       // EXX
+      0xDA => self.jp(Flag::Carry),             // JP C, NN
       0xDB => self.unimplemented_inst(),        // IN A, (N)
-      0xDC => self.unimplemented_inst(),        // CALL C, {:04X}
+      0xDC => self.call(Flag::Carry),           // CALL C, NN
       0xDD => self.unimplemented_inst(),
-      0xDE => self.unimplemented_inst(),        // SBC A, {:02X}
+      0xDE => self.sbc8(Op8::Imm),              // SBC A, N
       0xDF => self.unimplemented_inst(),        // RST 18h
 
       0xE0 => self.unimplemented_inst(),        // RET PO
-      0xE1 => self.unimplemented_inst(),        // POP HL
-      0xE2 => self.unimplemented_inst(),        // JP PO, {:04X}
-      0xE3 => self.unimplemented_inst(),        // EX (SP), HL
-      0xE4 => self.unimplemented_inst(),        // CALL PO, {:04X}
-      0xE5 => self.unimplemented_inst(),        // PUSH HL
-      0xE6 => self.unimplemented_inst(),        // AND {:02X}
+      0xE1 => self.pop16(Op16::HL),             // POP HL
+      0xE2 => self.unimplemented_inst(),       // JP PO, NN
+      0xE3 => self.ex_spd_hl(),                 // EX (SP), HL
+      0xE4 => self.unimplemented_inst(),        // CALL PO, NN
+      0xE5 => self.push16(Op16::HL),            // PUSH HL
+      0xE6 => self.and8(Op8::Imm),              // AND N
       0xE7 => self.unimplemented_inst(),        // RST 20h
       0xE8 => self.unimplemented_inst(),        // RET PE
       0xE9 => self.unimplemented_inst(),        // JP (HL)
-      0xEA => self.unimplemented_inst(),        // JP PE, {:04X}
+      0xEA => self.unimplemented_inst(),        // JP PE, NN
       0xEB => self.ex_de_hl(),                  // EX DE, HL
-      0xEC => self.unimplemented_inst(),        // CALL PE, {:04X}
+      0xEC => self.unimplemented_inst(),        // CALL PE, NN
       0xED => self.unimplemented_inst(),
-      0xEE => self.unimplemented_inst(),        // XOR {:02X}
+      0xEE => self.unimplemented_inst(),        // XOR N
       0xEF => self.unimplemented_inst(),        // RST 28h
 
       0xF0 => self.unimplemented_inst(),        // RET P
-      0xF1 => self.unimplemented_inst(),        // POP AF
-      0xF2 => self.unimplemented_inst(),        // JP P, {:04X}
+      0xF1 => self.pop16(Op16::AF),             // POP AF
+      0xF2 => self.unimplemented_inst(),        // JP P, NN
       0xF3 => self.unimplemented_inst(),        // DI
-      0xF4 => self.unimplemented_inst(),        // CALL P, {:04X}
-      0xF5 => self.unimplemented_inst(),        // PUSH AF
-      0xF6 => self.unimplemented_inst(),        // OR {:02X}
+      0xF4 => self.unimplemented_inst(),        // CALL P, NN
+      0xF5 => self.push16(Op16::AF),            // PUSH AF
+      0xF6 => self.or8(Op8::Imm),               // OR N
       0xF7 => self.unimplemented_inst(),        // RST 30h
       0xF8 => self.unimplemented_inst(),        // RET M
-      0xF9 => self.unimplemented_inst(),        // LD SP, HL
-      0xFA => self.unimplemented_inst(),        // JP M, {:04X}
+      0xF9 => self.ld16(Op16::SP, Op16::HL),    // LD SP, HL
+      0xFA => self.unimplemented_inst(),        // JP M, NN
       0xFB => self.unimplemented_inst(),        // EI
-      0xFC => self.unimplemented_inst(),        // CALL M, {:04X}
+      0xFC => self.unimplemented_inst(),        // CALL M, NN
       0xFD => self.unimplemented_inst(),
-      0xFE => self.unimplemented_inst(),        // CP {:02X}
+      0xFE => self.cp8(Op8::Imm),               // CP N
       0xFF => self.unimplemented_inst(),        // RST 38h
       _ => unreachable!(),
     }
@@ -1049,7 +1069,7 @@ impl State {
       0x37 => write!(f, "SCF"),
       0x38 => write!(f, "JR C, {:04X}", self.pc_offset(self.peek_imm8(1))),
       0x39 => write!(f, "ADD HL, SP"),
-      0x3A => write!(f, "ADD HL, ({:04X})", self.peek_imm16(1)),
+      0x3A => write!(f, "LD A, ({:04X})", self.peek_imm16(1)),
       0x3B => write!(f, "DEC SP"),
       0x3C => write!(f, "INC A"),
       0x3D => write!(f, "DEC A"),
