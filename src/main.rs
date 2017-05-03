@@ -1,11 +1,17 @@
-// TODO(ubsan): p flag
+// TODO(ubsan): p/v flag
 // TODO(ubsan): h flag
 // TODO(ubsan): n flag
 
-extern crate rustyline;
-//extern crate clap;
+#![feature(type_ascription)]
+#[allow(dead_code)]
 
-//use clap::{App, Arg};
+extern crate clap;
+mod wrapping;
+
+use std::fmt::{self, Debug, Formatter};
+
+use clap::{App, Arg};
+use wrapping::{w8, w16, w, cvt, Extensions};
 
 // CALLING CONVENTION
 // first, u16s get passed in BC, DE, HL in that order
@@ -24,81 +30,29 @@ extern crate rustyline;
 // primes are saved
 // IX and IY are saved
 fn main() {
-  let mut state = State::zeroed();
+  let rom = {
+    use std::io::Read;
 
-  let mut brks = Vec::with_capacity(20);
-  let mut old_cmd = None;
-  println!("{:?}", state);
+    let matches = App::new("retro")
+      .version("0.1.1")
+      .author("Nicole Mazzuca <npmazzuca@gmail.com>")
+      .about("An emulator for the `retro` computer")
+      .arg(Arg::with_name("rom")
+           .value_name("FILE")
+           .help("sets the rom to boot from")
+           .index(1))
+      .get_matches();
+    let filename =
+      matches.value_of("input").expect("ROM to boot from required");
+    let mut file = std::fs::File::open(filename).unwrap();
+    let mut v = Vec::new();
+    file.read_to_end(&mut v).unwrap();
+    v
+  };
 
-  let mut rl = Readline::new();
-  loop {
-    match rl.get_dbg_cmd(old_cmd) {
-      DebugCommand::Step => {
-        old_cmd = Some(DebugCommand::Step);
-        if !state.step() { break; }
-        println!("{:?}", state);
-      }
-      DebugCommand::Next => {
-        old_cmd = Some(DebugCommand::Next);
-        if !state.next(&brks) { break; }
-        println!("{:?}", state);
-      }
-      DebugCommand::Cont => {
-        old_cmd = Some(DebugCommand::Cont);
-        if !state.cont(&brks) { break; }
-        println!("{:?}", state);
-      }
-      DebugCommand::Break(b) => {
-        old_cmd = Some(DebugCommand::Break(b));
-        println!("breakpoint set at {:04X}", b);
-        brks.push(b);
-      }
-      DebugCommand::Quit => break,
-    }
-  }
-  println!("final: \n{:?}", state);
+  Processor::new(&rom).run();
 }
 
-enum DebugCommand {
-  Next,
-  Step,
-  Cont,
-  Break(u16),
-  Quit,
-}
-
-struct Readline(rustyline::Editor<()>);
-
-impl Readline {
-  fn new() -> Self {
-    Readline(rustyline::Editor::new())
-  }
-
-  fn get_dbg_cmd(&mut self, old_cmd: Option<DebugCommand>) -> DebugCommand {
-    loop {
-      let s = self.0.readline("> ").unwrap();
-      self.0.add_history_entry(&s);
-      match s.trim() {
-        "n" | "next" => return DebugCommand::Next,
-        "s" | "step" => return DebugCommand::Step,
-        "q" | "quit" => return DebugCommand::Quit,
-        "c" | "cont" | "continue" => return DebugCommand::Cont,
-        "" => if let Some(old) = old_cmd { return old },
-        s if s.starts_with("b ") | s.starts_with("break ") => {
-          let space = s.rfind(' ').unwrap();
-          let n = s[space + 1..].parse::<u16>();
-          if let Ok(n) = n {
-            return DebugCommand::Break(n)
-          }
-        },
-        _ => {}
-      }
-      println!("?");
-    }
-  }
-}
-
-use std::fmt::{self, Debug, Formatter};
 pub struct Flags(pub u8);
 impl Flags {
   pub fn new() -> Self { Flags(0) }
@@ -106,7 +60,7 @@ impl Flags {
   pub fn s(&self) -> bool { self.0 >> 7 == 1 }
   pub fn z(&self) -> bool { self.0 >> 6 == 1 }
   pub fn h(&self) -> bool { unimplemented!() /*self.0 >> 4 == 1*/ }
-  pub fn p(&self) -> bool { unimplemented!() /*self.0 >> 2 == 1*/ }
+  pub fn pv(&self) -> bool { unimplemented!() /*self.0 >> 2 == 1*/ }
   pub fn n(&self) -> bool { unimplemented!() /*self.0 >> 1 == 1*/ }
   pub fn c(&self) -> bool { self.0 >> 0 == 1 }
   pub fn set_s(&mut self, to: bool) {
@@ -120,7 +74,7 @@ impl Flags {
   pub fn set_h(&mut self, _to: bool) {
     unimplemented!() /*self.0 |= (to as u8) << 4*/
   }
-  pub fn set_p(&mut self, _to: bool) {
+  pub fn set_pv(&mut self, _to: bool) {
     unimplemented!() /*self.0 |= (to as u8) << 2*/
   }
   pub fn set_n(&mut self, _to: bool) {
@@ -141,52 +95,52 @@ impl Debug for Flags {
 
 #[derive(Debug)]
 pub struct Regs {
-  pub a: u8,
-  pub b: u8,
-  pub c: u8,
-  pub d: u8,
-  pub e: u8,
-  pub h: u8,
-  pub l: u8,
+  pub a: w8,
+  pub b: w8,
+  pub c: w8,
+  pub d: w8,
+  pub e: w8,
+  pub h: w8,
+  pub l: w8,
   pub flags: Flags,
 }
 
 impl Regs {
   fn new() -> Self {
     Regs {
-      a: 0,
-      b: 0,
-      c: 0,
-      d: 0,
-      e: 0,
-      h: 0,
-      l: 0,
+      a: w(0),
+      b: w(0),
+      c: w(0),
+      d: w(0),
+      e: w(0),
+      h: w(0),
+      l: w(0),
       flags: Flags::new(),
     }
   }
 
-  fn hl(&self) -> u16 {
-    (self.h as u16) << 8 | self.l as u16
+  fn hl(&self) -> w16 {
+    (cvt(self.h): w16) << 8 | (cvt(self.l): w16)
   }
-  fn set_hl(&mut self, to: u16) {
-    self.h = (to >> 8) as u8;
-    self.l = to as u8;
-  }
-
-  fn bc(&self) -> u16 {
-    (self.b as u16) << 8 | self.c as u16
-  }
-  fn set_bc(&mut self, to: u16) {
-    self.b = (to >> 8) as u8;
-    self.c = to as u8;
+  fn set_hl(&mut self, to: w16) {
+    self.h = cvt(to >> 8);
+    self.l = cvt(to);
   }
 
-  fn de(&self) -> u16 {
-    (self.d as u16) << 8 | self.e as u16
+  fn bc(&self) -> w16 {
+    (cvt(self.b): w16) << 8 | (cvt(self.c): w16)
   }
-  fn set_de(&mut self, to: u16) {
-    self.d = (to >> 8) as u8;
-    self.e = to as u8;
+  fn set_bc(&mut self, to: w16) {
+    self.b = cvt(to >> 8);
+    self.c = cvt(to);
+  }
+
+  fn de(&self) -> w16 {
+    (cvt(self.d): w16) << 8 | (cvt(self.e): w16)
+  }
+  fn set_de(&mut self, to: w16) {
+    self.d = cvt(to >> 8): w8;
+    self.e = cvt(to): w8;
   }
 }
 
@@ -227,100 +181,97 @@ pub enum Flag {
   Carry,
 }
 
-pub struct State {
-  r: Regs,
-  rp: Regs, // r'
-  sp: u16,
-  pc: u16,
-  memory: Box<[u8; std::u16::MAX as usize + 1]>,
-  _enable_int: u8,
+struct Memory {
+  banks: [Box<[u8; 0x4000]>; 4]
+  // rom: [0x0000, 0x3FFF]
+  // ram1: [0x4000, 0x7FFF]
+  // ram2: [0x8000, 0xAFFF]
+  // ram3: [0xB000, 0xFFFF]
 }
 
-impl Debug for State {
-  fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-    writeln!(f, "A  CZPSNH  BC   DE   HL   PC  v(PC)")?;
-    writeln!(f, "{:02X} {}{}{}{}{}{} {:04X} {:04X} {:04X} \
-        {:04X} {:02X}{:02X}{:02X}",
-        self.r.a,
-        self.r.flags.c() as u8, self.r.flags.z() as u8,
-        0/*self.r.flags.p() as u8*/, self.r.flags.s() as u8,
-        0/*self.r.flags.n() as u8*/, 0/*self.flags.h() as u8*/,
-        self.r.bc(), self.r.de(), self.r.hl(),
+impl Memory {
+  fn new(rom: &[u8]) -> Memory {
+    fn create_array() -> Box<[u8; 0x4000]> {
+      unsafe {
+        let backing = vec![0u8; 0x4000];
+        let boxed = backing.into_boxed_slice();
+        Box::from_raw(Box::into_raw(boxed) as *mut [u8; 0x4000])
+      }
+    }
 
-        self.pc,
-        self.memory[self.pc as usize], self.memory[(self.pc + 1) as usize],
-        self.memory[(self.pc + 2) as usize])?;
+    let mut ret = Memory {
+      banks: [create_array(), create_array(), create_array(), create_array()],
+    };
+    ret.banks[0][..rom.len()].copy_from_slice(rom);
+    ret
+  }
 
-    // prime regs
-    writeln!(f, "A' CZPSNH' BC'  DE'  HL'  SP  v(SP)")?;
-    writeln!(f, "{:02X} {}{}{}{}{}{} {:04X} {:04X} {:04X} \
-        {:04X} {:02X}{:02X}{:02X}",
-        self.rp.a,
-        self.rp.flags.c() as u8, self.rp.flags.z() as u8,
-        0/*self.rp.flags.p() as u8*/, self.rp.flags.s() as u8,
-        0/*self.rp.flags.n() as u8*/, 0/*self.rp.flags.h()*/,
-        self.rp.bc(), self.rp.de(), self.rp.hl(),
+  fn get_bank(n: w16) -> usize {
+    (n.0 as usize) >> 14
+  }
+  fn get_idx(n: w16) -> usize {
+    (n.0 as usize) & (!0 >> 2)
+  }
 
-        self.sp,
-        self.memory[self.sp as usize], self.memory[(self.sp + 1) as usize],
-        self.memory[(self.sp + 2) as usize])?;
-    write!(f, "        ")?;
-    self.print_op(f)
+  pub fn read8(&self, idx: w16) -> w8 {
+    w(self.banks[Self::get_bank(idx)][Self::get_idx(idx)])
+  }
+  pub fn write8(&mut self, idx: w16, n: w8) {
+    assert!(Self::get_bank(idx) != 0, "can't write to r/o memory");
+    self.banks[Self::get_bank(idx)][Self::get_idx(idx)] = n.0;
+  }
+  pub fn read16(&self, idx: w16) -> w16 {
+    cvt(self.read8(idx)): w16
+    | (cvt(self.read8(idx + w(1))): w16) << 8
+  }
+  pub fn write16(&mut self, idx: w16, n: w16) {
+    self.write8(idx, cvt(n));
+    self.write8(idx + w(1), cvt(n >> 8));
   }
 }
 
-impl State {
-  pub fn zeroed() -> Self {
-    let memory = unsafe {
-      // should use box syntax, when it's stabilized
-      #[allow(non_upper_case_globals)]
-      const size: usize = std::u16::MAX as usize + 1;
-      let mut tmp = vec![0; size];
-      let ptr = tmp.as_mut_ptr();
-      std::mem::forget(tmp);
-      Box::from_raw(ptr as *mut [u8; size])
-    };
-    State {
-      r: Regs::new(), // r
-      rp: Regs::new(), // r'
-      sp: 0,
-      pc: 0,
-      memory: memory,
-      _enable_int: 0,
+pub struct Processor {
+  r: Regs,
+  rp: Regs, // r'
+  sp: w16,
+  pc: w16,
+  memory: Memory,
+}
+
+impl Processor {
+  pub fn new(rom: &[u8]) -> Self {
+    Processor {
+      r: Regs::new(),
+      rp: Regs::new(),
+      sp: w(0),
+      pc: w(0),
+      memory: Memory::new(rom),
     }
   }
 
-  pub fn with_memory(mem: &[u8]) -> Self {
-    let mut ret = Self::zeroed();
-    ret.memory[..mem.len()].copy_from_slice(mem);
+  pub fn get_imm8(&mut self) -> w8 {
+    let ret = self.memory.read8(self.pc);
+    self.pc += w(1);
+    ret
+  }
+  pub fn get_imm16(&mut self) -> w16 {
+    let ret = self.memory.read16(self.pc);
+    self.pc += w(2);
     ret
   }
 
-  pub fn get_imm8(&mut self) -> u8 {
-    let ret = self.memory[self.pc as usize];
-    self.pc += 1;
-    ret
+  pub fn peek_imm8(&self, ind: w16) -> w8 {
+    self.memory.read8(self.pc + ind)
   }
-  pub fn get_imm16(&mut self) -> u16 {
-    let lower = self.get_imm8();
-    let upper = self.get_imm8();
-    (upper as u16) << 8 | lower as u16
+  pub fn peek_imm16(&self, ind: w16) -> w16 {
+    self.memory.read16(self.pc + ind)
   }
 
-  pub fn peek_imm8(&self, ind: u16) -> u8 {
-    self.memory[(self.pc + ind) as usize]
-  }
-  pub fn peek_imm16(&self, ind: u16) -> u16 {
-    let lower = self.peek_imm8(ind);
-    let upper = self.peek_imm8(ind + 1);
-    (upper as u16) << 8 | lower as u16
+  pub fn pc_offset(&self, ind: w8) -> w16 {
+    self.pc + w(ind.0 as i8 as u16)
   }
 
-  pub fn pc_offset(&self, ind: u8) -> u16 {
-    self.pc + ind as i8 as u16
-  }
-
-  pub fn get8(&mut self, op: Op8) -> u8 {
+  pub fn get8(&mut self, op: Op8) -> w8 {
     match op {
       Op8::A => self.r.a,
       Op8::B => self.r.b,
@@ -329,14 +280,14 @@ impl State {
       Op8::E => self.r.e,
       Op8::H => self.r.h,
       Op8::L => self.r.l,
-      Op8::BCd => self.memory[self.r.bc() as usize],
-      Op8::DEd => self.memory[self.r.de() as usize],
-      Op8::HLd => self.memory[self.r.hl() as usize],
+      Op8::BCd => self.memory.read8(self.r.bc()),
+      Op8::DEd => self.memory.read8(self.r.de()),
+      Op8::HLd => self.memory.read8(self.r.hl()),
       Op8::Imm => self.get_imm8(),
-      Op8::Immd => self.memory[self.get_imm16() as usize],
+      Op8::Immd => {let tmp = self.get_imm16(); self.memory.read8(tmp)},
     }
   }
-  pub fn set8(&mut self, op: Op8, to: u8) {
+  pub fn set8(&mut self, op: Op8, to: w8) {
     match op {
       Op8::A => self.r.a = to,
       Op8::B => self.r.b = to,
@@ -345,20 +296,20 @@ impl State {
       Op8::E => self.r.e = to,
       Op8::H => self.r.h = to,
       Op8::L => self.r.l = to,
-      Op8::BCd => self.memory[self.r.bc() as usize] = to,
-      Op8::DEd => self.memory[self.r.de() as usize] = to,
-      Op8::HLd => self.memory[self.r.hl() as usize] = to,
-      Op8::Immd => self.memory[self.get_imm16() as usize] = to,
+      Op8::BCd => self.memory.write8(self.r.bc(), to),
+      Op8::DEd => self.memory.write8(self.r.de(), to),
+      Op8::HLd => self.memory.write8(self.r.hl(), to),
+      Op8::Immd => {let tmp = self.get_imm16(); self.memory.write8(tmp, to)},
       Op8::Imm => panic!("passed Op8::Imm to set8"),
     }
   }
 
-  pub fn get16(&mut self, op: Op16) -> u16 {
+  pub fn get16(&mut self, op: Op16) -> w16 {
     match op {
       Op16::AF => {
         let upper = self.r.a;
-        let lower = self.r.flags.0;
-        (upper as u16) << 8 | lower as u16
+        let lower = w(self.r.flags.0);
+        (cvt(upper): w16) << 8 | cvt(lower): w16
       }
       Op16::BC => self.r.bc(),
       Op16::DE => self.r.de(),
@@ -367,17 +318,15 @@ impl State {
       Op16::Imm => self.get_imm16(),
       Op16::Immd => {
         let idx = self.get_imm16();
-        let lower = self.memory[idx as usize];
-        let upper = self.memory[(idx + 1) as usize];
-        (upper as u16) << 8 | lower as u16
+        self.memory.read16(idx)
       }
     }
   }
-  pub fn set16(&mut self, op: Op16, to: u16) {
+  pub fn set16(&mut self, op: Op16, to: w16) {
     match op {
       Op16::AF => {
-        self.r.a = (to >> 8) as u8;
-        self.r.flags.0 = to as u8;
+        self.r.a = cvt(to >> 8);
+        self.r.flags.0 = to.0 as u8;
       }
       Op16::BC => self.r.set_bc(to),
       Op16::DE => self.r.set_de(to),
@@ -386,8 +335,7 @@ impl State {
       Op16::Imm => panic!("Passed Op16::Imm to set16"),
       Op16::Immd => {
         let idx = self.get_imm16();
-        self.memory[idx as usize] = to as u8;
-        self.memory[(idx + 1) as usize] = (to >> 8) as u8;
+        self.memory.write16(idx, to);
       }
     }
   }
@@ -395,8 +343,8 @@ impl State {
   pub fn flag(&mut self, f: Flag) -> bool {
     match f {
       Flag::Djnz => {
-        self.r.b -= 1;
-        self.r.b != 0
+        self.r.b -= w(1);
+        self.r.b != w(0)
       }
       Flag::Uncond => true,
       Flag::Nonzero => !self.r.flags.z(),
@@ -407,45 +355,34 @@ impl State {
   }
 
   fn unimplemented_inst(&mut self) {
-    self.pc -= 1;
-    panic!("Error: Unimplemented Instruction: {} \n{:?}",
-      self.memory[self.pc as usize], self);
-  }
-
-  fn _not_an_inst(&mut self) {
-    self.pc -= 1;
-    panic!("Error: Unimplemented Instruction: {:#?} ({})", self,
-      self.memory[self.pc as usize]);
+    panic!("Error: Unimplemented Instruction: {}",
+      self.memory.read8(self.pc - w(1)));
   }
 }
 
-impl State {
+impl Processor {
   pub fn ld16(&mut self, into: Op16, from: Op16) {
     let tmp = self.get16(from);
     self.set16(into, tmp);
   }
   pub fn ld8(&mut self, into: Op8, from: Op8) {
     let tmp = self.get8(from);
-    self.r.flags.set_z(tmp == 0);
-    self.r.flags.set_s((tmp as i8) < 0);
+    self.r.flags.set_z(tmp == w(0));
+    self.r.flags.set_s((tmp.0 as i8) < 0);
     self.set8(into, tmp);
   }
-  pub fn pop_imm16(&mut self) -> u16 {
-    let lower = self.memory[self.sp as usize];
-    let upper = self.memory[(self.sp + 1) as usize];
-    self.sp += 2;
-    (upper as u16) << 8 | lower as u16
+  pub fn pop_imm16(&mut self) -> w16 {
+    let tmp = self.memory.read16(self.sp);
+    self.sp += w(2);
+    tmp
   }
   pub fn pop16(&mut self, into: Op16) {
     let tmp = self.pop_imm16();
     self.set16(into, tmp);
   }
-  pub fn push_imm16(&mut self, from: u16) {
-    let lower = from as u8;
-    let upper = (from >> 8) as u8;
-    self.sp -= 2;
-    self.memory[self.sp as usize] = lower;
-    self.memory[(self.sp + 1) as usize] = upper;
+  pub fn push_imm16(&mut self, from: w16) {
+    self.sp -= w(2);
+    self.memory.write16(self.sp, from);
   }
   pub fn push16(&mut self, from: Op16) {
     let tmp = self.get16(from);
@@ -453,73 +390,66 @@ impl State {
   }
 
   pub fn add16(&mut self, into: Op16, from: Op16) {
-    let tmp = self.get16(into) as u32 + self.get16(from) as u32;
-    self.r.flags.set_c(tmp > 0xFFFF);
-    self.set16(into, tmp as u16);
+    let (v, o) = self.get16(into).overflowing_add(self.get16(from));
+    self.r.flags.set_c(o);
+    self.set16(into, v);
+  }
+
+  fn set_flags(&mut self, (v, o): (w8, bool)) -> w8 {
+    self.r.flags.set_c(o);
+    self.r.flags.set_z(v == w(0));
+    self.r.flags.set_s(v.top_bit_set());
+    v
   }
 
   pub fn add8(&mut self, from: Op8) {
-    let tmp = self.r.a as u16 + self.get8(from) as u16;
-    self.r.flags.set_c(tmp > 0xFF);
-    let tmp = tmp as u8;
-    self.r.flags.set_z(tmp == 0);
-    self.r.flags.set_s((tmp as i8) < 0);
-
-    self.r.a = tmp;
+    let tmp = self.r.a.overflowing_add(self.get8(from));
+    let v = self.set_flags(tmp);
+    self.r.a = v;
   }
   pub fn adc8(&mut self, from: Op8) {
-    let tmp = self.r.a as u16 + self.get8(from) as u16
-        + self.r.flags.c() as u16;
-    self.r.flags.set_c(tmp > 0xFF);
-    let tmp = tmp as u8;
-    self.r.flags.set_z(tmp == 0);
-    self.r.flags.set_s((tmp as i8) < 0);
-
-    self.r.a = tmp;
+    let v = {
+      let carry = w(self.r.flags.c() as u8);
+      let tmp = self.r.a.overflowing_add(self.get8(from));
+      let (v, o) = (tmp.0).overflowing_add(carry);
+      self.set_flags((v, o | tmp.1))
+    };
+    self.r.a = v;
   }
-  pub fn sub8(&mut self, from: Op8) {
-    let tmp = self.r.a as i16 - self.get8(from) as i16;
-    self.r.flags.set_c(tmp < 0);
-    let tmp = tmp as u8;
-    self.r.flags.set_z(tmp == 0);
-    self.r.flags.set_s((tmp as i8) < 0);
 
-    self.r.a = tmp;
+  pub fn sub8(&mut self, from: Op8) {
+    let tmp = self.r.a.overflowing_sub(self.get8(from));
+    let v = self.set_flags(tmp);
+    self.r.a = v;
   }
   pub fn sbc8(&mut self, from: Op8) {
-    let tmp = self.r.a as i16 - self.get8(from) as i16
-        - self.r.flags.c() as i16;
-    self.r.flags.set_c(tmp < 0);
-    let tmp = tmp as u8;
-    self.r.flags.set_z(tmp == 0);
-    self.r.flags.set_s((tmp as i8) < 0);
-
-    self.r.a = tmp;
+    let v = {
+      let carry = w(self.r.flags.c() as u8);
+      let tmp = self.r.a.overflowing_sub(self.get8(from));
+      let (v, o) = (tmp.0).overflowing_sub(carry);
+      self.set_flags((v, o | tmp.1))
+    };
+    self.r.a = v;
   }
+
   pub fn and8(&mut self, from: Op8) {
     let tmp = self.r.a & self.get8(from);
-    self.r.flags.set_z(tmp == 0);
-    self.r.flags.set_s((tmp as i8) < 0);
-    self.r.a = tmp;
+    let v = self.set_flags((tmp, false));
+    self.r.a = v;
   }
   pub fn xor8(&mut self, from: Op8) {
     let tmp = self.r.a ^ self.get8(from);
-    self.r.flags.set_z(tmp == 0);
-    self.r.flags.set_s((tmp as i8) < 0);
-    self.r.a = tmp;
+    let v = self.set_flags((tmp, false));
+    self.r.a = v;
   }
   pub fn or8(&mut self, from: Op8) {
     let tmp = self.r.a | self.get8(from);
-    self.r.flags.set_z(tmp == 0);
-    self.r.flags.set_s((tmp as i8) < 0);
-    self.r.a = tmp;
+    let v = self.set_flags((tmp, false));
+    self.r.a = v;
   }
   pub fn cp8(&mut self, from: Op8) {
-    let tmp = self.r.a as i16 - self.get8(from) as i16;
-    self.r.flags.set_c(tmp < 0);
-    let tmp = tmp as u8;
-    self.r.flags.set_z(tmp == 0);
-    self.r.flags.set_s((tmp as i8) < 0);
+    let tmp = self.r.a.overflowing_sub(self.get8(from));
+    self.set_flags(tmp);
   }
 
   pub fn not(&mut self, arg: Op8) {
@@ -528,62 +458,55 @@ impl State {
   }
 
   pub fn inc16(&mut self, arg: Op16) {
-    let tmp = self.get16(arg) + 1;
-    self.set16(arg, tmp);
+    let v = self.get16(arg) + w(1);
+    self.set16(arg, v);
   }
   pub fn dec16(&mut self, arg: Op16) {
-    let tmp = self.get16(arg) - 1;
-    self.set16(arg, tmp);
+    let v = self.get16(arg) - w(1);
+    self.set16(arg, v);
   }
   pub fn inc8(&mut self, arg: Op8) {
-    let tmp = self.get8(arg) as u16 + 1;
-    self.r.flags.set_c(tmp > 0xFF);
-    let tmp = tmp as u8;
-    self.r.flags.set_z(tmp == 0);
-    self.r.flags.set_s((tmp as i8) < 0);
-
-    self.set8(arg, tmp as u8);
+    let tmp = self.get8(arg) + w(1);
+    let v = self.set_flags((tmp, false));
+    self.set8(arg, v);
   }
   pub fn dec8(&mut self, arg: Op8) {
-    let tmp = self.get8(arg) as i8 - 1;
-    self.r.flags.set_c(tmp < 0);
-    self.r.flags.set_z(tmp == 0);
-    self.r.flags.set_s(tmp < 0);
-
-    self.set8(arg, tmp as u8);
+    let tmp = self.get8(arg) - w(1);
+    let v = self.set_flags((tmp, false));
+    self.set8(arg, v);
   }
 
   pub fn rlc(&mut self, arg: Op8) {
     let tmp = self.get8(arg);
     let carry = tmp >> 7;
-    self.r.flags.set_c(carry != 0);
+    self.r.flags.set_c(carry != w(0));
     self.set8(arg, tmp << 1 | carry);
   }
   pub fn rrc(&mut self, arg: Op8) {
     let tmp = self.get8(arg);
     let carry = tmp << 7;
-    self.r.flags.set_c(carry != 0);
+    self.r.flags.set_c(carry != w(0));
     self.set8(arg, tmp >> 1 | carry);
   }
   pub fn rl(&mut self, arg: Op8) {
-    let mut tmp = self.get8(arg);
-    let carry = tmp >> 7;
-    tmp = tmp << 1 | self.r.flags.c() as u8;
-    self.set8(arg, tmp);
-    self.r.flags.set_c(carry != 0);
+    let tmp = self.get8(arg);
+    let carry_flag = tmp >> 7;
+    let carry = w(self.r.flags.c() as u8);
+    self.r.flags.set_c(carry_flag != w(0));
+    self.set8(arg, tmp << 1 | carry);
   }
   pub fn rr(&mut self, arg: Op8) {
-    let mut tmp = self.get8(arg);
-    let carry = tmp << 7;
-    tmp = tmp >> 1 | (self.r.flags.c() as u8) << 7;
-    self.set8(arg, tmp);
-    self.r.flags.set_c(carry != 0);
+    let tmp = self.get8(arg);
+    let carry_flag = tmp << 7;
+    let carry = w(self.r.flags.c() as u8);
+    self.r.flags.set_c(carry_flag != w(0));
+    self.set8(arg, tmp >> 1 | carry << 7);
   }
 
   pub fn jr(&mut self, f: Flag) {
     let label = self.get_imm8();
     if self.flag(f) {
-      self.pc -= 2; // get to start of opcode
+      self.pc -= w(2); // get to start of opcode
       self.pc = self.pc_offset(label);
     }
   }
@@ -619,8 +542,9 @@ impl State {
   }
 
   pub fn ex_spd_hl(&mut self) {
-    std::mem::swap(&mut self.r.l, &mut self.memory[self.sp as usize]);
-    std::mem::swap(&mut self.r.h, &mut self.memory[(self.sp + 1) as usize]);
+    let tmp = self.r.hl();
+    self.r.set_hl(self.memory.read16(self.sp));
+    self.memory.write16(self.sp, tmp);
   }
 
   pub fn exx(&mut self) {
@@ -635,7 +559,7 @@ impl State {
   pub fn halt(&mut self) {}
 }
 
-impl State {
+impl Processor {
   pub fn is_ret_op(op: u8) -> bool {
     op == 0xC9 || // RET
       op == 0xC0 || // RET NZ
@@ -676,55 +600,17 @@ impl State {
 }
 
 // at the end because lots of lines
-impl State {
-  // returns true if the machine should continue
-  // returns false if it shut off
-  pub fn cont(&mut self, brks: &[u16]) -> bool {
-    loop {
-      if !self.step() {
-        return false;
-      }
-
-      if brks.into_iter().find(|n| self.pc == **n).is_some() {
-        return true;
-      }
-    }
-  }
-
-  // returns true if the machine should continue
-  // returns false if it should shut off
-  pub fn next(&mut self, brks: &[u16]) -> bool {
-    if Self::is_call_op(self.peek_imm8(0)) {
-      if !self.step() {
-        return false;
-      }
-      loop {
-        if brks.into_iter().find(|n| self.pc == **n).is_some() {
-          return true;
-        }
-
-        if Self::is_ret_op(self.peek_imm8(0)) { // RET CC
-          let flag = Self::ret_op_flag(self.peek_imm8(0));
-          self.step();
-          if self.flag(flag) {
-            return true;
-          }
-        }
-
-        if !self.step() {
-          return false;
-        }
-      }
-    } else {
-      self.step()
-    }
+impl Processor {
+  pub fn run(&mut self) {
+    while self.step() { }
   }
 
   // returns true if the machine should continue
   // returns false if it shut off
+  // TODO(ubsan): write this better
   pub fn step(&mut self) -> bool {
     let opcode = self.get_imm8();
-    match opcode {
+    match opcode.0 {
       0x00 => {}                                // NOP
       0x01 => self.ld16(Op16::BC, Op16::Imm),   // LD BC, NN
       0x02 => self.ld8(Op8::BCd, Op8::A),       // LD (BC), A
@@ -1006,15 +892,15 @@ impl State {
   }
 
   pub fn print_op(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-    let opcode = self.peek_imm8(0);
-    match opcode {
+    let opcode = self.peek_imm8(w(0));
+    match opcode.0 {
       0x00 => write!(f, "NOP"),
-      0x01 => write!(f, "LD BC, {:04X}", self.peek_imm16(1)),
+      0x01 => write!(f, "LD BC, {:04X}", self.peek_imm16(w(1))),
       0x02 => write!(f, "LD (BC), A"),
       0x03 => write!(f, "INC BC"),
       0x04 => write!(f, "INC B"),
       0x05 => write!(f, "DEC B"),
-      0x06 => write!(f, "LD B, {:02X}", self.peek_imm8(1)),
+      0x06 => write!(f, "LD B, {:02X}", self.peek_imm8(w(1))),
       0x07 => write!(f, "RLCA"),
       0x08 => write!(f, "EX AF, AF'"),
       0x09 => write!(f, "ADD HL, BC"),
@@ -1022,58 +908,58 @@ impl State {
       0x0B => write!(f, "DEC BC"),
       0x0C => write!(f, "INC C"),
       0x0D => write!(f, "DEC C"),
-      0x0E => write!(f, "LD C, {:02X}", self.peek_imm8(1)),
+      0x0E => write!(f, "LD C, {:02X}", self.peek_imm8(w(1))),
       0x0F => write!(f, "RRCA"),
 
-      0x10 => write!(f, "DJNZ {:04X}", self.pc_offset(self.peek_imm8(1))),
-      0x11 => write!(f, "LD DE, {:04X}", self.peek_imm16(1)),
+      0x10 => write!(f, "DJNZ {:04X}", self.pc_offset(self.peek_imm8(w(1)))),
+      0x11 => write!(f, "LD DE, {:04X}", self.peek_imm16(w(1))),
       0x12 => write!(f, "LD (DE), A"),
       0x13 => write!(f, "INC DE"),
       0x14 => write!(f, "INC D"),
       0x15 => write!(f, "DEC D"),
-      0x16 => write!(f, "LD D, {:02X}", self.peek_imm8(1)),
+      0x16 => write!(f, "LD D, {:02X}", self.peek_imm8(w(1))),
       0x17 => write!(f, "RLA"),
-      0x18 => write!(f, "JR {:04X}", self.pc_offset(self.peek_imm8(1))),
+      0x18 => write!(f, "JR {:04X}", self.pc_offset(self.peek_imm8(w(1)))),
       0x19 => write!(f, "ADD HL, DE"),
       0x1A => write!(f, "LD A, (DE)"),
       0x1B => write!(f, "DEC DE"),
       0x1C => write!(f, "INC E"),
       0x1D => write!(f, "DEC E"),
-      0x1E => write!(f, "LD E, {:02X}", self.peek_imm8(1)),
+      0x1E => write!(f, "LD E, {:02X}", self.peek_imm8(w(1))),
       0x1F => write!(f, "RRA"),
 
-      0x20 => write!(f, "JR NZ, {:04X}", self.pc_offset(self.peek_imm8(1))),
-      0x21 => write!(f, "LD HL, {:04X}", self.peek_imm16(1)),
-      0x22 => write!(f, "LD ({:04X}), HL", self.peek_imm16(1)),
+      0x20 => write!(f, "JR NZ, {:04X}", self.pc_offset(self.peek_imm8(w(1)))),
+      0x21 => write!(f, "LD HL, {:04X}", self.peek_imm16(w(1))),
+      0x22 => write!(f, "LD ({:04X}), HL", self.peek_imm16(w(1))),
       0x23 => write!(f, "INC HL"),
       0x24 => write!(f, "INC H"),
       0x25 => write!(f, "DEC H"),
-      0x26 => write!(f, "LD H, {:02X}", self.peek_imm8(1)),
+      0x26 => write!(f, "LD H, {:02X}", self.peek_imm8(w(1))),
       0x27 => write!(f, "DAA"),
-      0x28 => write!(f, "JR Z, {:04X}", self.pc_offset(self.peek_imm8(1))),
+      0x28 => write!(f, "JR Z, {:04X}", self.pc_offset(self.peek_imm8(w(1)))),
       0x29 => write!(f, "ADD HL, HL"),
-      0x2A => write!(f, "LD HL, ({:04X})", self.peek_imm16(1)),
+      0x2A => write!(f, "LD HL, ({:04X})", self.peek_imm16(w(1))),
       0x2B => write!(f, "DEC HL"),
       0x2C => write!(f, "INC L"),
       0x2D => write!(f, "DEC L"),
-      0x2E => write!(f, "LD L, {:02X}", self.peek_imm8(1)),
+      0x2E => write!(f, "LD L, {:02X}", self.peek_imm8(w(1))),
       0x2F => write!(f, "CPL"),
 
-      0x30 => write!(f, "JR NC, {:04X}", self.pc_offset(self.peek_imm8(1))),
-      0x31 => write!(f, "LD SP, {:04X}", self.peek_imm16(1)),
-      0x32 => write!(f, "LD ({:04X}), A", self.peek_imm16(1)),
+      0x30 => write!(f, "JR NC, {:04X}", self.pc_offset(self.peek_imm8(w(1)))),
+      0x31 => write!(f, "LD SP, {:04X}", self.peek_imm16(w(1))),
+      0x32 => write!(f, "LD ({:04X}), A", self.peek_imm16(w(1))),
       0x33 => write!(f, "INC SP"),
       0x34 => write!(f, "INC (HL)"),
       0x35 => write!(f, "DEC (HL)"),
-      0x36 => write!(f, "LD (HL), {:02X}", self.peek_imm8(1)),
+      0x36 => write!(f, "LD (HL), {:02X}", self.peek_imm8(w(1))),
       0x37 => write!(f, "SCF"),
-      0x38 => write!(f, "JR C, {:04X}", self.pc_offset(self.peek_imm8(1))),
+      0x38 => write!(f, "JR C, {:04X}", self.pc_offset(self.peek_imm8(w(1)))),
       0x39 => write!(f, "ADD HL, SP"),
-      0x3A => write!(f, "LD A, ({:04X})", self.peek_imm16(1)),
+      0x3A => write!(f, "LD A, ({:04X})", self.peek_imm16(w(1))),
       0x3B => write!(f, "DEC SP"),
       0x3C => write!(f, "INC A"),
       0x3D => write!(f, "DEC A"),
-      0x3E => write!(f, "LD A, {:02X}", self.peek_imm8(1)),
+      0x3E => write!(f, "LD A, {:02X}", self.peek_imm8(w(1))),
       0x3F => write!(f, "CCF"),
 
       0x40 => write!(f, "LD B, B"),
@@ -1214,70 +1100,70 @@ impl State {
 
       0xC0 => write!(f, "RET NZ"),
       0xC1 => write!(f, "POP BC"),
-      0xC2 => write!(f, "JP NZ, {:04X}", self.peek_imm16(1)),
-      0xC3 => write!(f, "JP {:04X}", self.peek_imm16(1)),
-      0xC4 => write!(f, "CALL NZ, {:04X}", self.peek_imm16(1)),
+      0xC2 => write!(f, "JP NZ, {:04X}", self.peek_imm16(w(1))),
+      0xC3 => write!(f, "JP {:04X}", self.peek_imm16(w(1))),
+      0xC4 => write!(f, "CALL NZ, {:04X}", self.peek_imm16(w(1))),
       0xC5 => write!(f, "PUSH BC"),
-      0xC6 => write!(f, "ADD A, {:02X}", self.peek_imm8(1)),
+      0xC6 => write!(f, "ADD A, {:02X}", self.peek_imm8(w(1))),
       0xC7 => write!(f, "RST 00h"),
       0xC8 => write!(f, "RET Z"),
       0xC9 => write!(f, "RET"),
-      0xCA => write!(f, "JP Z, {:04X}", self.peek_imm16(1)),
+      0xCA => write!(f, "JP Z, {:04X}", self.peek_imm16(w(1))),
       0xCB => write!(f, "unimplemented"),// self.get_bit_op(f),
-      0xCC => write!(f, "CALL Z, {:04X}", self.peek_imm16(1)),
-      0xCD => write!(f, "CALL {:04X}", self.peek_imm16(1)),
-      0xCE => write!(f, "ADC A, {:02X}", self.peek_imm8(1)),
+      0xCC => write!(f, "CALL Z, {:04X}", self.peek_imm16(w(1))),
+      0xCD => write!(f, "CALL {:04X}", self.peek_imm16(w(1))),
+      0xCE => write!(f, "ADC A, {:02X}", self.peek_imm8(w(1))),
       0xCF => write!(f, "RST 08h"),
 
       0xD0 => write!(f, "RET NC"),
       0xD1 => write!(f, "POP DE"),
-      0xD2 => write!(f, "JP NC, {:04X}", self.peek_imm16(1)),
-      0xD3 => write!(f, "unimplemented"), //write!(f, "OUT ({:02X}), A", self.peek_imm8(1)),
-      0xD4 => write!(f, "CALL NC, {:04X}", self.peek_imm16(1)),
+      0xD2 => write!(f, "JP NC, {:04X}", self.peek_imm16(w(1))),
+      0xD3 => write!(f, "unimplemented"), //write!(f, "OUT ({:02X}), A", self.peek_imm8(w(1))),
+      0xD4 => write!(f, "CALL NC, {:04X}", self.peek_imm16(w(1))),
       0xD5 => write!(f, "PUSH DE"),
-      0xD6 => write!(f, "SUB {:02X}", self.peek_imm8(1)),
+      0xD6 => write!(f, "SUB {:02X}", self.peek_imm8(w(1))),
       0xD7 => write!(f, "RST 10h"),
       0xD8 => write!(f, "RET C"),
       0xD9 => write!(f, "EXX"),
-      0xDA => write!(f, "JP C, {:04X}", self.peek_imm16(1)),
-      0xDB => write!(f, "unimplemented"), //write!(f, "IN A, {:02X}", self.peek_imm8(1)),
-      0xDC => write!(f, "CALL C, {:04X}", self.peek_imm16(1)),
+      0xDA => write!(f, "JP C, {:04X}", self.peek_imm16(w(1))),
+      0xDB => write!(f, "unimplemented"), //write!(f, "IN A, {:02X}", self.peek_imm8(w(1))),
+      0xDC => write!(f, "CALL C, {:04X}", self.peek_imm16(w(1))),
       0xDD => write!(f, "unimplemented"), // self.print_ix_op(f),
-      0xDE => write!(f, "SBC A, {:02X}", self.peek_imm8(1)),
+      0xDE => write!(f, "SBC A, {:02X}", self.peek_imm8(w(1))),
       0xDF => write!(f, "RST 18h"),
 
       0xE0 => write!(f, "RET PO"),
       0xE1 => write!(f, "POP HL"),
-      0xE2 => write!(f, "JP PO, {:04X}", self.peek_imm16(1)),
+      0xE2 => write!(f, "JP PO, {:04X}", self.peek_imm16(w(1))),
       0xE3 => write!(f, "EX (SP), HL"),
-      0xE4 => write!(f, "CALL PO, {:04X}", self.peek_imm16(1)),
+      0xE4 => write!(f, "CALL PO, {:04X}", self.peek_imm16(w(1))),
       0xE5 => write!(f, "PUSH HL"),
-      0xE6 => write!(f, "AND {:02X}", self.peek_imm8(1)),
+      0xE6 => write!(f, "AND {:02X}", self.peek_imm8(w(1))),
       0xE7 => write!(f, "RST 20h"),
       0xE8 => write!(f, "RET PE"),
       0xE9 => write!(f, "JP (HL)"),
-      0xEA => write!(f, "JP PE, {:04X}", self.peek_imm16(1)),
+      0xEA => write!(f, "JP PE, {:04X}", self.peek_imm16(w(1))),
       0xEB => write!(f, "EX DE, HL"),
-      0xEC => write!(f, "CALL PE, {:04X}", self.peek_imm16(1)),
+      0xEC => write!(f, "CALL PE, {:04X}", self.peek_imm16(w(1))),
       0xED => write!(f, "unimplemented"), // self.print_extd_op(f),
-      0xEE => write!(f, "XOR {:02X}", self.peek_imm8(1)),
+      0xEE => write!(f, "XOR {:02X}", self.peek_imm8(w(1))),
       0xEF => write!(f, "RST 28h"),
 
       0xF0 => write!(f, "RET P"),
       0xF1 => write!(f, "POP AF"),
-      0xF2 => write!(f, "JP P, {:04X}", self.peek_imm16(1)),
+      0xF2 => write!(f, "JP P, {:04X}", self.peek_imm16(w(1))),
       0xF3 => write!(f, "DI"),
-      0xF4 => write!(f, "CALL P, {:04X}", self.peek_imm16(1)),
+      0xF4 => write!(f, "CALL P, {:04X}", self.peek_imm16(w(1))),
       0xF5 => write!(f, "PUSH AF"),
-      0xF6 => write!(f, "OR {:02X}", self.peek_imm8(1)),
+      0xF6 => write!(f, "OR {:02X}", self.peek_imm8(w(1))),
       0xF7 => write!(f, "RST 30h"),
       0xF8 => write!(f, "RET M"),
       0xF9 => write!(f, "LD SP, HL"),
-      0xFA => write!(f, "JP M, {:04X}", self.peek_imm16(1)),
+      0xFA => write!(f, "JP M, {:04X}", self.peek_imm16(w(1))),
       0xFB => write!(f, "EI"),
-      0xFC => write!(f, "CALL M, {:04X}", self.peek_imm16(1)),
+      0xFC => write!(f, "CALL M, {:04X}", self.peek_imm16(w(1))),
       0xFD => write!(f, "unimplemented"), // self.print_iy_op(f),
-      0xFE => write!(f, "CP {:02X}", self.peek_imm8(1)),
+      0xFE => write!(f, "CP {:02X}", self.peek_imm8(w(1))),
       0xFF => write!(f, "RST 38h"),
       _ => unreachable!(),
     }
