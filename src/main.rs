@@ -2,7 +2,6 @@
 // TODO(ubsan): h flag
 // TODO(ubsan): n flag
 
-#![feature(type_ascription)]
 #[allow(dead_code)]
 
 extern crate clap;
@@ -34,7 +33,7 @@ fn main() {
     use std::io::Read;
 
     let matches = App::new("retro")
-      .version("0.1.1")
+      .version("0.1.2")
       .author("Nicole Mazzuca <npmazzuca@gmail.com>")
       .about("An emulator for the `retro` computer")
       .arg(Arg::with_name("rom")
@@ -120,7 +119,7 @@ impl Regs {
   }
 
   fn hl(&self) -> w16 {
-    (cvt(self.h): w16) << 8 | (cvt(self.l): w16)
+    (cvt(self.h) as w16) << 8 | (cvt(self.l) as w16)
   }
   fn set_hl(&mut self, to: w16) {
     self.h = cvt(to >> 8);
@@ -128,7 +127,7 @@ impl Regs {
   }
 
   fn bc(&self) -> w16 {
-    (cvt(self.b): w16) << 8 | (cvt(self.c): w16)
+    (cvt(self.b) as w16) << 8 | (cvt(self.c) as w16)
   }
   fn set_bc(&mut self, to: w16) {
     self.b = cvt(to >> 8);
@@ -136,11 +135,11 @@ impl Regs {
   }
 
   fn de(&self) -> w16 {
-    (cvt(self.d): w16) << 8 | (cvt(self.e): w16)
+    (cvt(self.d) as w16) << 8 | (cvt(self.e) as w16)
   }
   fn set_de(&mut self, to: w16) {
-    self.d = cvt(to >> 8): w8;
-    self.e = cvt(to): w8;
+    self.d = cvt(to >> 8) as w8;
+    self.e = cvt(to) as w8;
   }
 }
 
@@ -221,8 +220,8 @@ impl Memory {
     self.banks[Self::get_bank(idx)][Self::get_idx(idx)] = n.0;
   }
   pub fn read16(&self, idx: w16) -> w16 {
-    cvt(self.read8(idx)): w16
-    | (cvt(self.read8(idx + w(1))): w16) << 8
+    cvt(self.read8(idx)) as w16
+    | (cvt(self.read8(idx + w(1))) as w16) << 8
   }
   pub fn write16(&mut self, idx: w16, n: w16) {
     self.write8(idx, cvt(n));
@@ -309,7 +308,7 @@ impl Processor {
       Op16::AF => {
         let upper = self.r.a;
         let lower = w(self.r.flags.0);
-        (cvt(upper): w16) << 8 | cvt(lower): w16
+        (cvt(upper) as w16) << 8 | cvt(lower) as w16
       }
       Op16::BC => self.r.bc(),
       Op16::DE => self.r.de(),
