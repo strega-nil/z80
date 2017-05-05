@@ -1,6 +1,6 @@
-use super::{Processor, Flag, Op8, Op16};
+use super::{Chip, Flag, Op8, Op16};
 
-impl Processor {
+impl Chip {
   // returns true if the machine should continue
   // returns false if it shut off
   // TODO(ubsan): write this better

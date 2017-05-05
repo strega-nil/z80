@@ -1,32 +1,58 @@
-// TODO(ubsan): p/v flag
-// TODO(ubsan): h flag
-// TODO(ubsan): n flag
-
-#[allow(dead_code)]
+#![deny(warnings)]
 
 extern crate clap;
+
 mod wrapping;
-mod processor;
+
+mod chip;
+mod memory;
 
 use clap::{App, Arg};
-use processor::Processor;
+use chip::Chip;
+use memory::Memory;
 
-// CALLING CONVENTION
-// first, u16s get passed in BC, DE, HL in that order
-// then, u8s get passed in A, B, C, D, E, H, L in that order;
-//   if a reg is already taken by a u16, then skip those regs
-// if a certain kind has to overflow the parameter regs, it's passed on the
-//   stack, backwards order
-// i.e., (1: u8, 2: u16, 3: u8, 4: u8, 5: u16, 6: u16, 7: u16, 8: u16) is
-//   2 = BC,  5 = DE, 6 = HL, 7 = (SP + 4), 8 = (SP + 2),
-//     1 = A, 4 = (SP + 6), 3 = (SP + 7)
-//     RET = (SP)
-// u8 returns are in A, u16 returns are in BC
-//   if it returns two u8s, return in BC
-// Otherwise, on the stack, with the address in BC
-//   (taking up the first u16 slot)
-// primes are saved
-// IX and IY are saved
+// NOTE(ubsan): bool(true) = HIGH, bool(false) = LOW
+
+struct Out {
+  address: u16,
+  data: u8,
+  // TODO(ubsan): make these bitflags
+  _m1: bool,
+  _mreq: bool,
+  _iorq: bool,
+  _rd: bool,
+  _wr: bool,
+  _rfsh: bool,
+  halt: bool,
+  _busack: bool,
+}
+
+struct In {
+  data: u8,
+  // TODO(ubsan): make these bitflags
+  // NOTE(ubsan): clock is implicit, in calling "step"
+  // +5v and ground are also implicit, as they aren't necessary in software
+  _busreq: bool,
+  _wait: bool,
+  _int: bool,
+  _nmi: bool,
+  _reset: bool,
+}
+
+struct Board {
+  chip: Chip,
+  memory: Memory,
+}
+
+impl Board {
+  fn new(rom: &[u8]) -> Self {
+    Board {
+      memory: Memory::new(rom),
+      chip: Chip::new(),
+    }
+  }
+}
+
 fn main() {
   let rom = {
     use std::io::Read;
@@ -36,10 +62,10 @@ fn main() {
       .author("Nicole Mazzuca <npmazzuca@gmail.com>")
       .about("An emulator for the `retro` computer")
       .arg(Arg::with_name("rom")
-           .value_name("FILE")
-           .help("sets the rom to boot from")
-           .index(1))
-      .get_matches();
+        .value_name("FILE")
+        .help("sets the rom to boot from")
+        .index(1)
+      ).get_matches();
     let filename =
       matches.value_of("input").expect("ROM to boot from required");
     let mut file = std::fs::File::open(filename).unwrap();
@@ -48,6 +74,6 @@ fn main() {
     v
   };
 
-  Processor::new(&rom).run();
+  let _board = Board::new(&rom);
 }
 

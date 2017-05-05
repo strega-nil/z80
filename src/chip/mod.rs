@@ -1,9 +1,14 @@
+// TODO(ubsan): p/v flag
+// TODO(ubsan): h flag
+// TODO(ubsan): n flag
+
 mod regs;
 mod decoder;
 
 use std::mem;
 
 use wrapping::{w8, w16, w, cvt, Extensions};
+use memory::Memory;
 
 use self::regs::Regs;
 
@@ -44,76 +49,30 @@ enum Flag {
   Carry,
 }
 
-struct Memory {
-  banks: [Box<[u8; 0x4000]>; 4]
-  // rom: [0x0000, 0x3FFF]
-  // ram1: [0x4000, 0x7FFF]
-  // ram2: [0x8000, 0xAFFF]
-  // ram3: [0xB000, 0xFFFF]
-}
-
-impl Memory {
-  fn new(rom: &[u8]) -> Memory {
-    fn create_array() -> Box<[u8; 0x4000]> {
-      unsafe {
-        let backing = vec![0u8; 0x4000];
-        let boxed = backing.into_boxed_slice();
-        Box::from_raw(Box::into_raw(boxed) as *mut [u8; 0x4000])
-      }
-    }
-
-    let mut ret = Memory {
-      banks: [create_array(), create_array(), create_array(), create_array()],
-    };
-    ret.banks[0][..rom.len()].copy_from_slice(rom);
-    ret
-  }
-
-  fn get_bank(n: w16) -> usize {
-    (n.0 as usize) >> 14
-  }
-  fn get_idx(n: w16) -> usize {
-    (n.0 as usize) & (!0 >> 2)
-  }
-
-  fn read8(&self, idx: w16) -> w8 {
-    w(self.banks[Self::get_bank(idx)][Self::get_idx(idx)])
-  }
-  fn write8(&mut self, idx: w16, n: w8) {
-    assert!(Self::get_bank(idx) != 0, "can't write to r/o memory");
-    self.banks[Self::get_bank(idx)][Self::get_idx(idx)] = n.0;
-  }
-  fn read16(&self, idx: w16) -> w16 {
-    cvt(self.read8(idx)) as w16
-    | (cvt(self.read8(idx + w(1))) as w16) << 8
-  }
-  fn write16(&mut self, idx: w16, n: w16) {
-    self.write8(idx, cvt(n));
-    self.write8(idx + w(1), cvt(n >> 8));
-  }
-}
-
-pub struct Processor {
+pub struct Chip {
   r: Regs,
   rp: Regs, // r'
   sp: w16,
   pc: w16,
-  memory: Memory,
 }
 
-impl Processor {
-  pub fn new(rom: &[u8]) -> Self {
-    Processor {
+impl Chip {
+  pub fn new() -> Self {
+    Chip {
       r: Regs::new(),
       rp: Regs::new(),
       sp: w(0),
       pc: w(0),
-      memory: Memory::new(rom),
     }
   }
 
-  pub fn run(&mut self) {
-    while self.step() { }
+  fn read16(&self, idx: w16) -> w16 {
+    cvt(self.memory.read8(idx)) as w16
+    | (cvt(self.memory.read8(idx + w(1))) as w16) << 8
+  }
+  fn write16(&mut self, idx: w16, n: w16) {
+    self.memory.write8(idx, cvt(n));
+    self.memory.write8(idx + w(1), cvt(n >> 8));
   }
 
   fn get_imm8(&mut self) -> w8 {
@@ -122,7 +81,7 @@ impl Processor {
     ret
   }
   fn get_imm16(&mut self) -> w16 {
-    let ret = self.memory.read16(self.pc);
+    let ret = self.read16(self.pc);
     self.pc += w(2);
     ret
   }
@@ -178,7 +137,7 @@ impl Processor {
       Op16::Imm => self.get_imm16(),
       Op16::Immd => {
         let idx = self.get_imm16();
-        self.memory.read16(idx)
+        self.read16(idx)
       }
     }
   }
@@ -195,7 +154,7 @@ impl Processor {
       Op16::Imm => panic!("Passed Op16::Imm to set16"),
       Op16::Immd => {
         let idx = self.get_imm16();
-        self.memory.write16(idx, to);
+        self.write16(idx, to);
       }
     }
   }
@@ -221,7 +180,7 @@ impl Processor {
 }
 
 // instructions
-impl Processor {
+impl Chip {
   fn ld16(&mut self, into: Op16, from: Op16) {
     let tmp = self.get16(from);
     self.set16(into, tmp);
@@ -233,7 +192,7 @@ impl Processor {
     self.set8(into, tmp);
   }
   fn pop_imm16(&mut self) -> w16 {
-    let tmp = self.memory.read16(self.sp);
+    let tmp = self.read16(self.sp);
     self.sp += w(2);
     tmp
   }
@@ -243,7 +202,8 @@ impl Processor {
   }
   fn push_imm16(&mut self, from: w16) {
     self.sp -= w(2);
-    self.memory.write16(self.sp, from);
+    let tmp = self.sp;
+    self.write16(tmp, from);
   }
   fn push16(&mut self, from: Op16) {
     let tmp = self.get16(from);
@@ -403,9 +363,11 @@ impl Processor {
   }
 
   fn ex_spd_hl(&mut self) {
-    let tmp = self.r.hl();
-    self.r.set_hl(self.memory.read16(self.sp));
-    self.memory.write16(self.sp, tmp);
+    let hl = self.r.hl();
+    let tmp = self.read16(self.sp);
+    let sp = self.sp;
+    self.r.set_hl(tmp);
+    self.write16(sp, hl);
   }
 
   fn exx(&mut self) {
