@@ -12,30 +12,23 @@ use Pins;
 use self::regs::Regs;
 
 #[derive(Copy, Clone, Debug)]
-enum Op8 {
-  A,
-  B,
-  C,
-  D,
-  E,
-  H,
-  L,
-  BCd,
-  DEd,
-  HLd,
-  Imm,
-  Immd,
+enum CompleteOp {
+  Nop,
+  Halt
 }
 
 #[derive(Copy, Clone, Debug)]
-enum Op16 {
-  AF,
-  BC,
-  DE,
-  HL,
-  SP,
-  Imm,
-  Immd,
+enum IncompleteOp {
+  Complete(CompleteOp),
+}
+
+impl IncompleteOp {
+  fn complete(self) -> Option<CompleteOp> {
+    use self::IncompleteOp::*;
+    match self {
+      Complete(c) => Some(c),
+    }
+  }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -51,6 +44,7 @@ enum Flag {
 enum State {
   FetchInstruction,
   ReceiveInstruction,
+  NeedMoreData(IncompleteOp),
 }
 
 pub struct Chip {
@@ -85,8 +79,32 @@ impl Chip {
       },
       State::ReceiveInstruction => {
         debug!("state: receive instruction ({:02X})", pins.data);
-        panic!("");
+        let op = self.decode_op(pins.data);
+        if let Some(op) = op.complete() {
+          self.run_op(pins, op);
+          self.state = State::FetchInstruction;
+        } else {
+          panic!("");
+        }
       }
+      State::NeedMoreData(_) => { unreachable!() },
+    }
+  }
+
+  fn decode_op(&self, data: u8) -> IncompleteOp {
+    match data {
+      0x00 => IncompleteOp::Complete(CompleteOp::Nop),
+      0x76 => IncompleteOp::Complete(CompleteOp::Halt),
+      n => panic!("unrecognized instruction: {:X}", n),
+    }
+  }
+
+  fn run_op(&mut self, pins: &mut Pins, op: CompleteOp) {
+    match op {
+      CompleteOp::Nop => {},
+      CompleteOp::Halt => {
+        pins.halt = true;
+      },
     }
   }
 }

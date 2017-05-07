@@ -108,7 +108,7 @@ fn main() {
     v
   };
   */
-  let rom = [32];
+  let rom = [0x0, 0x0, 0x76];
 
   let mut board = Board::new(&rom);
   let stdin = std::io::stdin();
