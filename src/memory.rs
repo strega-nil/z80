@@ -1,4 +1,4 @@
-use wrapping::{w, w8, w16};
+use Pins;
 
 enum Void { }
 impl Void {
@@ -30,11 +30,21 @@ impl Memory {
     Memory(ret)
   }
 
-  fn get_idx(n: w16) -> usize {
-    (n.0 as usize) & (!0 >> 2)
+  pub fn step(&mut self, pins: &mut Pins) {
+    if pins.mreq {
+      if pins.rd {
+        pins.data = self.read(pins.address);
+      } else if pins.wr {
+        self.write(pins.address, pins.data);
+      }
+    }
   }
-  fn banks(&self, bn: w16) -> &[u8; 0x4000] {
-    match bn.0 >> 14 {
+
+  fn get_idx(n: u16) -> usize {
+    (n as usize) & (!0 >> 2)
+  }
+  fn banks(&self, bn: u16) -> &[u8; 0x4000] {
+    match bn >> 14 {
       0 => &self.0.rom,
       1 => &self.0.ram1,
       2 => &self.0.ram2,
@@ -42,8 +52,8 @@ impl Memory {
       _ => unsafe { Void::unreachable() }, // unreachable
     }
   }
-  fn banks_mut(&mut self, bn: w16) -> &mut [u8; 0x4000] {
-    match bn.0 >> 14 {
+  fn banks_mut(&mut self, bn: u16) -> &mut [u8; 0x4000] {
+    match bn >> 14 {
       0 => panic!("can't write to r/o memory"),
       1 => &mut self.0.ram1,
       2 => &mut self.0.ram2,
@@ -52,11 +62,11 @@ impl Memory {
     }
   }
 
-  pub fn read8(&self, idx: w16) -> w8 {
-    w(self.banks(idx)[Self::get_idx(idx)])
+  fn read(&self, idx: u16) -> u8 {
+    self.banks(idx)[Self::get_idx(idx)]
   }
-  pub fn write8(&mut self, idx: w16, n: w8) {
-    self.banks_mut(idx)[Self::get_idx(idx)] = n.0;
+  fn write(&mut self, idx: u16, n: u8) {
+    self.banks_mut(idx)[Self::get_idx(idx)] = n;
   }
 }
 
