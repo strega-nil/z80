@@ -1,4 +1,5 @@
 mod regs;
+mod ops;
 
 use std::mem;
 
@@ -6,41 +7,20 @@ use wrapping::{w8, w16, w};
 use Pins;
 
 use self::regs::Regs;
-
-
-// NOTE(ubsan): these numbers are how many arguments the operands take
-#[derive(Copy, Clone, Debug)]
-enum OneArgOp {
-  LdAImm,
-}
+use self::ops::Op;
 
 #[derive(Copy, Clone, Debug)]
-enum CompleteOp {
-  Nop,
-  Halt,
-  Arg(OneArgOp, w8),
-}
-
-#[derive(Copy, Clone, Debug)]
-enum IncompleteOp {
-  Complete(CompleteOp),
-  OneArg(OneArgOp),
-}
-
-#[derive(Copy, Clone, Debug)]
-enum Flag {
-  Djnz,
-  Uncond,
-  Nonzero,
+enum ArgsNeeded {
   Zero,
-  NoCarry,
-  Carry,
+  One,
+  Two,
 }
 
+#[derive(Copy, Clone, Debug)]
 enum State {
   FetchInstruction,
   ReceiveInstruction,
-  NeedMoreData(IncompleteOp),
+  NeedMoreData(Op, ArgsNeeded),
 }
 
 pub struct Chip {
@@ -75,56 +55,67 @@ impl Chip {
       },
       State::ReceiveInstruction => {
         debug!("state: receive instruction ({:02X})", pins.data);
-        let op = self.decode_op(pins.data);
-        match op {
-          IncompleteOp::Complete(op) => {
+        let op = Op::decode(pins.data);
+        match op.args_needed() {
+          ArgsNeeded::Zero => {
             self.run_op(pins, op);
             self.state = State::FetchInstruction;
           },
-          IncompleteOp::OneArg(_) => {
+          an => {
             pins.mreq = true;
             pins.rd = true;
             pins.address = self.pc.0;
             self.pc += w(1);
-            self.state = State::NeedMoreData(op);
+            self.state = State::NeedMoreData(op, an);
           }
         }
       }
-      State::NeedMoreData(op) => {
+      State::NeedMoreData(op, args_needed) => {
         debug!("state: receive data ({:02X})", pins.data);
-        match op {
-          IncompleteOp::Complete(_) => unreachable!(),
-          IncompleteOp::OneArg(op) => {
-            let op = CompleteOp::Arg(op, w(pins.data));
+        match op.args_needed() {
+          ArgsNeeded::Zero => unreachable!(),
+          ArgsNeeded::One => {
             self.run_op(pins, op);
             self.state = State::FetchInstruction;
+          }
+          ArgsNeeded::Two => {
+            self.r.z = w(pins.data);
+            pins.mreq = true;
+            pins.rd = true;
+            pins.address = self.pc.0;
+            self.pc += w(1);
+            self.state = State::NeedMoreData(op, ArgsNeeded::One);
           }
         }
       },
     }
   }
 
-  fn decode_op(&self, data: u8) -> IncompleteOp {
-    match data {
-      0x00 => IncompleteOp::Complete(CompleteOp::Nop),
-      0x3E => IncompleteOp::OneArg(OneArgOp::LdAImm),
-      0x76 => IncompleteOp::Complete(CompleteOp::Halt),
-      n => panic!("unrecognized instruction: {:02X}", n),
-    }
-  }
+  fn run_op(&mut self, pins: &mut Pins, op: Op) {
+    // NOTE(ubsan): how op arguments work:
+    // ArgsNeeded::Zero - no arguments, trivial
+    // ArgsNeeded::One - one argument at pins.data
+    // ArgsNeeded::Two -
+    //   two arguments; the first is at z, the second is at pins.data
+    // numbering goes backwards for arguments
+    let arg0 = w(pins.data);
+    let arg1 = self.r.z;
+    let _arg2 = self.r.w;
 
-  fn run_op(&mut self, pins: &mut Pins, op: CompleteOp) {
     match op {
-      CompleteOp::Nop => {},
-      CompleteOp::Halt => {
+      Op::Nop => {},
+      Op::Halt => {
         debug!("register a: {:02X}", self.r.a);
         pins.halt = true;
       },
-      CompleteOp::Arg(op, arg) => match op {
-        OneArgOp::LdAImm => {
-          self.r.a = arg;
-        }
+      Op::LdAImm => {
+        self.r.a = arg0;
       },
+      Op::LdBcImm => {
+        self.r.b = arg0; // higher
+        self.r.c = arg1; // lower
+      }
+      inst => panic!("unimplemented instruction: {:?}", inst),
     }
   }
 }
