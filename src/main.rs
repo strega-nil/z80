@@ -16,10 +16,13 @@ use memory::Memory;
 // NOTE(ubsan): bool(true) = HIGH, bool(false) = LOW
 // NOTE(ubsan): clock is implicit, in calling "step"
 // +5v and ground are also implicit, as they aren't necessary in software
+// TODO(ubsan): make the booleans bitflags
 pub struct Pins {
-  pub address: u16,
+  // NOTE(ubsan): inout
   pub data: u8,
-  // TODO(ubsan): make these bitflags
+
+  // NOTE(ubsan): output
+  pub address: u16,
   pub _m1: bool,
   pub mreq: bool,
   pub _iorq: bool,
@@ -28,6 +31,8 @@ pub struct Pins {
   pub _rfsh: bool,
   pub halt: bool,
   pub _busack: bool,
+
+  // NOTE(ubsan): input
   pub _busreq: bool,
   pub _wait: bool,
   pub _int: bool,
@@ -55,8 +60,16 @@ impl Pins {
       _reset: false,
     }
   }
-  fn zero(&mut self) {
-    *self = Self::new();
+  fn zero_out(&mut self) {
+    self.address = 0;
+    self._m1= false;
+    self.mreq= false;
+    self._iorq= false;
+    self.rd= false;
+    self.wr= false;
+    self._rfsh= false;
+    self.halt= false;
+    self._busack= false;
   }
 }
 
@@ -108,16 +121,12 @@ fn main() {
     v
   };
   */
-  let rom = [0x0, 0x0, 0x76];
+  let rom = [0x0, 0x3E, 0x32, 0x76];
 
   let mut board = Board::new(&rom);
   let stdin = std::io::stdin();
-  for _ in stdin.lock().lines() {
-    if board.halted() {
-      break;
-    } else {
-      board.step();
-    }
+  while !board.halted() {
+    board.step();
   }
 }
 

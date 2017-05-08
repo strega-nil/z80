@@ -1,7 +1,3 @@
-// TODO(ubsan): p/v flag
-// TODO(ubsan): h flag
-// TODO(ubsan): n flag
-
 mod regs;
 
 use std::mem;
@@ -11,24 +7,24 @@ use Pins;
 
 use self::regs::Regs;
 
+
+// NOTE(ubsan): these numbers are how many arguments the operands take
+#[derive(Copy, Clone, Debug)]
+enum OneArgOp {
+  LdAImm,
+}
+
 #[derive(Copy, Clone, Debug)]
 enum CompleteOp {
   Nop,
-  Halt
+  Halt,
+  Arg(OneArgOp, w8),
 }
 
 #[derive(Copy, Clone, Debug)]
 enum IncompleteOp {
   Complete(CompleteOp),
-}
-
-impl IncompleteOp {
-  fn complete(self) -> Option<CompleteOp> {
-    use self::IncompleteOp::*;
-    match self {
-      Complete(c) => Some(c),
-    }
-  }
+  OneArg(OneArgOp),
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -67,10 +63,10 @@ impl Chip {
   }
 
   pub fn step(&mut self, pins: &mut Pins) {
+    pins.zero_out();
     match self.state {
       State::FetchInstruction => {
         debug!("state: fetch instruction");
-        pins.zero();
         pins.mreq = true;
         pins.rd = true;
         pins.address = self.pc.0;
@@ -80,22 +76,40 @@ impl Chip {
       State::ReceiveInstruction => {
         debug!("state: receive instruction ({:02X})", pins.data);
         let op = self.decode_op(pins.data);
-        if let Some(op) = op.complete() {
-          self.run_op(pins, op);
-          self.state = State::FetchInstruction;
-        } else {
-          panic!("");
+        match op {
+          IncompleteOp::Complete(op) => {
+            self.run_op(pins, op);
+            self.state = State::FetchInstruction;
+          },
+          IncompleteOp::OneArg(_) => {
+            pins.mreq = true;
+            pins.rd = true;
+            pins.address = self.pc.0;
+            self.pc += w(1);
+            self.state = State::NeedMoreData(op);
+          }
         }
       }
-      State::NeedMoreData(_) => { unreachable!() },
+      State::NeedMoreData(op) => {
+        debug!("state: receive data ({:02X})", pins.data);
+        match op {
+          IncompleteOp::Complete(_) => unreachable!(),
+          IncompleteOp::OneArg(op) => {
+            let op = CompleteOp::Arg(op, w(pins.data));
+            self.run_op(pins, op);
+            self.state = State::FetchInstruction;
+          }
+        }
+      },
     }
   }
 
   fn decode_op(&self, data: u8) -> IncompleteOp {
     match data {
       0x00 => IncompleteOp::Complete(CompleteOp::Nop),
+      0x3E => IncompleteOp::OneArg(OneArgOp::LdAImm),
       0x76 => IncompleteOp::Complete(CompleteOp::Halt),
-      n => panic!("unrecognized instruction: {:X}", n),
+      n => panic!("unrecognized instruction: {:02X}", n),
     }
   }
 
@@ -103,7 +117,13 @@ impl Chip {
     match op {
       CompleteOp::Nop => {},
       CompleteOp::Halt => {
+        debug!("register a: {:02X}", self.r.a);
         pins.halt = true;
+      },
+      CompleteOp::Arg(op, arg) => match op {
+        OneArgOp::LdAImm => {
+          self.r.a = arg;
+        }
       },
     }
   }
