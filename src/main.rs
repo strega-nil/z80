@@ -13,6 +13,12 @@ use clap::{App, Arg};
 use chip::Chip;
 use memory::Memory;
 
+// NOTE(ubsan): this emulator is *not* cycle-accurate
+
+pub trait Peripheral {
+  fn step(&mut self, pins: &mut Pins);
+}
+
 // NOTE(ubsan): bool(true) = HIGH, bool(false) = LOW
 // NOTE(ubsan): clock is implicit, in calling "step"
 // +5v and ground are also implicit, as they aren't necessary in software
@@ -73,24 +79,26 @@ impl Pins {
   }
 }
 
-struct Board {
+struct Board<'a> {
   pins: Pins, // communication!
   chip: Chip,
-  memory: Memory,
+  peripherals: Box<[&'a mut Peripheral]>,
 }
 
-impl Board {
-  fn new(rom: &[u8]) -> Self {
+impl<'a> Board<'a> {
+  fn new(peripherals: Box<[&'a mut Peripheral]>) -> Self {
     Board {
       pins: Pins::new(),
-      memory: Memory::new(rom),
       chip: Chip::new(),
+      peripherals,
     }
   }
 
   fn step(&mut self) {
     self.chip.step(&mut self.pins);
-    self.memory.step(&mut self.pins);
+    for p in &mut *self.peripherals {
+      p.step(&mut self.pins);
+    }
   }
 
   fn halted(&self) -> bool {
@@ -121,12 +129,45 @@ fn main() {
     v
   };
   */
-  let rom = [0x0, 0x3E, 0x32, 0x76];
 
-  let mut board = Board::new(&rom);
+  // a = *(0x4000) * *(0x4001)
+  let rom = [
+    // data setup
+    0x21, 0x00, 0x40,
+    0x36, 0x10,
+    0x23,
+    0x36, 0x08,
+
+    // multiplication
+    // n1 in b
+    // n2 in c
+    // res in a
+    0x21, 0x00, 0x40,
+    0x46,
+    0x23,
+    0x4E,
+    0xAF,
+
+    0xB9,
+    0x28, 0x0A, // test for zero c
+    0xB8,
+    0x28, 0x07, // test for zero b
+
+    //start:
+    0x80,
+    0x0D,
+    0x20, 0xFE,
+
+    //end:
+    0x76,
+  ];
+
+  let mut memory = Memory::new(&rom);
+  let mut board = Board::new(Box::new([&mut memory]));
   let stdin = std::io::stdin();
   while !board.halted() {
     board.step();
+    ::std::thread::sleep_ms(20);
   }
 }
 

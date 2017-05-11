@@ -1,354 +1,163 @@
 use super::ArgsNeeded;
 
 #[derive(Copy, Clone, Debug)]
-#[repr(u8)]
+pub(super) enum Conditional {
+}
+
+#[derive(Copy, Clone, Debug)]
+pub(super) enum Reg8 {
+  B,
+  C,
+  D,
+  E,
+  H,
+  L,
+  Hld,
+  A,
+}
+
+impl Reg8 {
+  fn arith_ld_arg(n: u8) -> (Self, Self) {
+    (Self::single_arg((n & 0b111000) >> 3), Self::single_arg(n & 0b111))
+  }
+
+  fn single_arg(n: u8) -> Self {
+    match n {
+      0x0 => Reg8::B,
+      0x1 => Reg8::C,
+      0x2 => Reg8::D,
+      0x3 => Reg8::E,
+      0x4 => Reg8::H,
+      0x5 => Reg8::L,
+      0x6 => Reg8::Hld,
+      0x7 => Reg8::A,
+      _ => unreachable!(),
+    }
+  }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub(super) enum Reg16 {
+  Bc,
+  De,
+  Hl,
+  Sp,
+}
+
+enum WhichOp {
+  First,
+  Second,
+}
+
+impl Reg16 {
+  fn op_arg(n: u8) -> (WhichOp, Self) {
+    let r1 = match (n & 0b110000) >> 4 {
+      0x0 => Reg16::Bc,
+      0x1 => Reg16::De,
+      0x2 => Reg16::Hl,
+      0x3 => Reg16::Sp,
+      _ => unreachable!(),
+    };
+    if n & 0b1000 == 0 {
+      (WhichOp::First, r1)
+    } else {
+      (WhichOp::Second, r1)
+    }
+  }
+}
+
+#[derive(Copy, Clone, Debug)]
 pub(super) enum Op {
-  Nop       = 0x00,
-  LdBcImm   = 0x01,
-  LdBcdA    = 0x02,
-  IncBc     = 0x03,
-  IncB      = 0x04,
-  DecB      = 0x05,
-  LdBImm    = 0x06,
-  Rlca      = 0x07,
-  ExAfAfp   = 0x08,
-  AddHlBc   = 0x09,
-  LdABcd    = 0x0A,
-  DecBc     = 0x0B,
-  IncC      = 0x0C,
-  DecC      = 0x0D,
-  LdCImm    = 0x0E,
-  Rrca      = 0x0F,
+  Nop,
+  Halt,
+  Ld16i(Reg16),
+  AddHl(Reg16),
 
-  Djnz      = 0x10,
-  LdDeImm   = 0x11,
-  LdDedA    = 0x12,
-  IncDe     = 0x13,
-  IncD      = 0x14,
-  DecD      = 0x15,
-  LdDImm    = 0x16,
-  Rla       = 0x17,
-  JrUnc     = 0x18,
-  AddHlDe   = 0x19,
-  LdADed    = 0x1A,
-  DecDe     = 0x1B,
-  IncE      = 0x1C,
-  DecE      = 0x1D,
-  LdEImm    = 0x1E,
-  Rra       = 0x1F,
+  Ld8I(Reg8),
+  Ld8(Reg8, Reg8),
 
-  JrNz      = 0x20,
-  LdHlImm   = 0x21,
-  LdImmdHl  = 0x22,
-  IncHl     = 0x23,
-  IncH      = 0x24,
-  DecH      = 0x25,
-  LdHImm    = 0x26,
-  Daa       = 0x27,
-  JrZ       = 0x28,
-  AddHlHl   = 0x29,
-  LdHlImmd  = 0x2A,
-  DecHl     = 0x2B,
-  IncL      = 0x2C,
-  DecL      = 0x2D,
-  LdLImm    = 0x2E,
-  Cpl       = 0x2F,
-
-  JrNc      = 0x30,
-  LdSpImm   = 0x31,
-  LdImmdA   = 0x32,
-  IncSp     = 0x33,
-  IncHld    = 0x34,
-  DecHld    = 0x35,
-  LdHldImm  = 0x36,
-  Scf       = 0x37,
-  JrC       = 0x38,
-  AddHlSp   = 0x39,
-  LdAImmd   = 0x3A,
-  DecSp     = 0x3B,
-  IncA      = 0x3C,
-  DecA      = 0x3D,
-  LdAImm    = 0x3E,
-  Ccf       = 0x3F,
-
-  LdBB      = 0x40,
-  LdBC      = 0x41,
-  LdBD      = 0x42,
-  LdBE      = 0x43,
-  LdBH      = 0x44,
-  LdBL      = 0x45,
-  LdBHld    = 0x46,
-  LdBA      = 0x47,
-  LdCB      = 0x48,
-  LdCC      = 0x49,
-  LdCD      = 0x4A,
-  LdCE      = 0x4B,
-  LdCH      = 0x4C,
-  LdCL      = 0x4D,
-  LdCHld    = 0x4E,
-  LdCA      = 0x4F,
-
-  LdDB      = 0x50,
-  LdDC      = 0x51,
-  LdDD      = 0x52,
-  LdDE      = 0x53,
-  LdDH      = 0x54,
-  LdDL      = 0x55,
-  LdDHld    = 0x56,
-  LdDA      = 0x57,
-  LdEB      = 0x58,
-  LdEC      = 0x59,
-  LdED      = 0x5A,
-  LdEE      = 0x5B,
-  LdEH      = 0x5C,
-  LdEL      = 0x5D,
-  LdEHld    = 0x5E,
-  LdEA      = 0x5F,
-
-  LdHB      = 0x60,
-  LdHC      = 0x61,
-  LdHD      = 0x62,
-  LdHE      = 0x63,
-  LdHH      = 0x64,
-  LdHL      = 0x65,
-  LdHHld    = 0x66,
-  LdHA      = 0x67,
-  LdLB      = 0x68,
-  LdLC      = 0x69,
-  LdLD      = 0x6A,
-  LdLE      = 0x6B,
-  LdLH      = 0x6C,
-  LdLL      = 0x6D,
-  LdLHld    = 0x6E,
-  LdLA      = 0x6F,
-
-  LdHldB    = 0x70,
-  LdHldC    = 0x71,
-  LdHldD    = 0x72,
-  LdHldE    = 0x73,
-  LdHldH    = 0x74,
-  LdHldL    = 0x75,
-  Halt      = 0x76,
-  LdHldA    = 0x77,
-  LdAB      = 0x78,
-  LdAC      = 0x79,
-  LdAD      = 0x7A,
-  LdAE      = 0x7B,
-  LdAH      = 0x7C,
-  LdAL      = 0x7D,
-  LdAHld    = 0x7E,
-  LdAA      = 0x7F,
-
-  AddAB     = 0x80,
-  AddAC     = 0x81,
-  AddAD     = 0x82,
-  AddAE     = 0x83,
-  AddAH     = 0x84,
-  AddAL     = 0x85,
-  AddAHld   = 0x86,
-  AddAA     = 0x87,
-  AdcAB     = 0x88,
-  AdcAC     = 0x89,
-  AdcAD     = 0x8A,
-  AdcAE     = 0x8B,
-  AdcAH     = 0x8C,
-  AdcAL     = 0x8D,
-  AdcAHld   = 0x8E,
-  AdcAA     = 0x8F,
-
-  SubB      = 0x90,
-  SubC      = 0x91,
-  SubD      = 0x92,
-  SubE      = 0x93,
-  SubH      = 0x94,
-  SubL      = 0x95,
-  SubHld    = 0x96,
-  SubA      = 0x97,
-  SbcAB     = 0x98,
-  SbcAC     = 0x99,
-  SbcAD     = 0x9A,
-  SbcAE     = 0x9B,
-  SbcAH     = 0x9C,
-  SbcAL     = 0x9D,
-  SbcAHld   = 0x9E,
-  SbcAA     = 0x9F,
-
-  AndB      = 0xA0,
-  AndC      = 0xA1,
-  AndD      = 0xA2,
-  AndE      = 0xA3,
-  AndH      = 0xA4,
-  AndL      = 0xA5,
-  AndHld    = 0xA6,
-  AndA      = 0xA7,
-  XorB      = 0xA8,
-  XorC      = 0xA9,
-  XorD      = 0xAA,
-  XorE      = 0xAB,
-  XorH      = 0xAC,
-  XorL      = 0xAD,
-  XorHld    = 0xAE,
-  XorA      = 0xAF,
-
-  OrB       = 0xB0,
-  OrC       = 0xB1,
-  OrD       = 0xB2,
-  OrE       = 0xB3,
-  OrH       = 0xB4,
-  OrL       = 0xB5,
-  OrHld     = 0xB6,
-  OrA       = 0xB7,
-  CpB       = 0xB8,
-  CpC       = 0xB9,
-  CpD       = 0xBA,
-  CpE       = 0xBB,
-  CpH       = 0xBC,
-  CpL       = 0xBD,
-  CpHld     = 0xBE,
-  CpA       = 0xBF,
-
-  RetNz     = 0xC0,
-  PopBc     = 0xC1,
-  JpNz      = 0xC2,
-  JpUnc     = 0xC3,
-  CallNz    = 0xC4,
-  PushBc    = 0xC5,
-  AddAImm   = 0xC6,
-  Rst00h    = 0xC7,
-  RetZ      = 0xC8,
-  RetUnc    = 0xC9,
-  JpZ       = 0xCA,
-  BitsOps   = 0xCB,
-  CallZ     = 0xCC,
-  CallUnc   = 0xCD,
-  AdcAImm   = 0xCE,
-  Rst08h    = 0xCF,
-
-  RetNc     = 0xD0,
-  PopDe     = 0xD1,
-  JpNc      = 0xD2,
-  OutImmdA  = 0xD3,
-  CallNc    = 0xD4,
-  PushDe    = 0xD5,
-  SubImm    = 0xD6,
-  Rst10h    = 0xD7,
-  RetC      = 0xD8,
-  Exx       = 0xD9,
-  JpC       = 0xDA,
-  InAImmd   = 0xDB,
-  CallC     = 0xDC,
-  IxOps     = 0xDD,
-  SbcAImm   = 0xDE,
-  Rst18h    = 0xDF,
-
-  RetPo     = 0xE0,
-  PopHl     = 0xE1,
-  JpPo      = 0xE2,
-  ExSpdHl   = 0xE3,
-  CallPo    = 0xE4,
-  PushHl    = 0xE5,
-  AndImm    = 0xE6,
-  Rst20h    = 0xE7,
-  RetPe     = 0xE8,
-  JpHld     = 0xE9,
-  JpPe      = 0xEA,
-  ExDeHl    = 0xEB,
-  CallPe    = 0xEC,
-  ExtdOps   = 0xED,
-  XorImm    = 0xEE,
-  Rst28h    = 0xEF,
-
-  RetP      = 0xF0,
-  PopAf     = 0xF1,
-  JpP       = 0xF2,
-  Di        = 0xF3,
-  CallP     = 0xF4,
-  PushAf    = 0xF5,
-  OrImm     = 0xF6,
-  Rst30h    = 0xF7,
-  RetM      = 0xF8,
-  LdSpHl    = 0xF9,
-  JpM       = 0xFA,
-  Ei        = 0xFB,
-  CallM     = 0xFC,
-  IyOps     = 0xFD,
-  CpImm     = 0xFE,
-  Rst38h    = 0xFF,
+  Inc8(Reg8),
+  Inc16(Reg16),
+  Dec16(Reg16),
 }
 
 impl Op {
-  pub(super) fn decode(n: u8) -> Op {
-    unsafe {
-      ::std::mem::transmute::<u8, Op>(n)
+  fn misc_block(n: u8) -> Self {
+    let (arg0, arg1) = ((n & 0b111000) >> 3, n & 0b111);
+    match arg1 {
+      0x0 => { // nop, ex af, and the jrs
+        if arg0 == 0x0 {
+          Op::Nop
+        } else {
+          unimplemented!()
+        }
+      },
+      0x1 => { // 16-bit loads and adds
+        let (op, arg) = Reg16::op_arg(n);
+        match op {
+          WhichOp::First => Op::Ld16i(arg),
+          WhichOp::Second => Op::AddHl(arg),
+        }
+      },
+      0x2 => { // deref loads
+        unimplemented!()
+      },
+      0x3 => { // 16-bit incs and decs
+        let (op, arg) = Reg16::op_arg(n);
+        match op {
+          WhichOp::First => Op::Inc16(arg),
+          WhichOp::Second => Op::Dec16(arg),
+        }
+      },
+      0x4 => { // 8-bit incs
+        unimplemented!()
+      },
+      0x5 => { // 8-bit decs
+        unimplemented!()
+      },
+      0x6 => { // immediate loads
+        Op::Ld8I(Reg8::single_arg(arg0))
+      },
+      0x7 => { // misc
+        unimplemented!()
+      },
+      _ => unreachable!(),
+    }
+  }
+  fn load_block(n: u8) -> Self {
+    match Reg8::arith_ld_arg(n) {
+      (Reg8::Hld, Reg8::Hld) => Op::Halt,
+      (a0, a1) => Op::Ld8(a0, a1),
+    }
+  }
+  fn arith_block(n: u8) -> Self {
+    panic!("unimplemented: arith ({:02X})", n)
+  }
+  fn jmp_block(n: u8) -> Self {
+    unimplemented!()
+  }
+
+  pub(super) fn decode(n: u8) -> Self {
+    match (n & 0b11000000) >> 6 {
+      0x0 => Self::misc_block(n & 0b111111),
+      0x1 => Self::load_block(n & 0b111111),
+      0x2 => Self::arith_block(n & 0b111111),
+      0x3 => Self::jmp_block(n & 0b111111),
+      _ => unreachable!(),
     }
   }
 
   pub(super) fn args_needed(&self) -> ArgsNeeded {
-    macro_rules! set_mems {
-      ($arr:expr, $an:ident, $($op:ident),* $(,)*) => ({
-        $($arr[Op::$op as usize] = ArgsNeeded::$an;)*
-      })
-    }
-    let mut arr = [ArgsNeeded::Zero; 256];
-    {
-      set_mems!(arr, One,
-        LdBImm,
-        LdCImm,
-        Djnz,
-        LdDImm,
-        JrUnc,
-        LdEImm,
-        JrNz,
-        LdHImm,
-        JrZ,
-        LdLImm,
-        JrNc,
-        LdHldImm,
-        JrC,
-        LdAImm,
-        AddAImm,
-        AdcAImm,
-        OutImmdA,
-        SubImm,
-        InAImmd,
-        SbcAImm,
-        AndImm,
-        XorImm,
-        OrImm,
-        CpImm,
-      )
-    }
-    {
-      set_mems!(arr, Two,
-        LdBcImm,
-        LdDeImm,
-        LdHlImm,
-        LdImmdHl,
-        LdHlImmd,
-        LdSpImm,
-        LdImmdA,
-        LdAImmd,
-        JpNz,
-        JpUnc,
-        CallNz,
-        JpZ,
-        CallZ,
-        CallUnc,
-        JpNc,
-        CallNc,
-        JpC,
-        CallC,
-        JpPo,
-        CallPo,
-        JpPe,
-        CallPe,
-        JpP,
-        CallP,
-        JpM,
-        CallM,
-      );
-    }
+    match *self {
+      Op::Nop | Op::Halt => ArgsNeeded::Zero,
 
-    arr[*self as usize]
+      Op::Ld8I(_) => ArgsNeeded::One,
+      Op::Ld8(_, _) => ArgsNeeded::Zero,
+
+      Op::Ld16i(_) => ArgsNeeded::Two,
+      Op::Inc16(_) => ArgsNeeded::Zero,
+      op => panic!("unimplemented inst: {:?}", op),
+    }
   }
 }
+

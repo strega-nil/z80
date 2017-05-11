@@ -1,4 +1,5 @@
 use Pins;
+use Peripheral;
 
 enum Void { }
 impl Void {
@@ -17,6 +18,18 @@ struct MemBox {
 
 pub struct Memory(Box<MemBox>);
 
+impl Peripheral for Memory {
+  fn step(&mut self, pins: &mut Pins) {
+    if pins.mreq {
+      if pins.rd {
+        pins.data = self.read(pins.address);
+      } else if pins.wr {
+        self.write(pins.address, pins.data);
+      }
+    }
+  }
+}
+
 impl Memory {
   pub fn new(rom: &[u8]) -> Memory {
     use std::mem;
@@ -30,18 +43,8 @@ impl Memory {
     Memory(ret)
   }
 
-  pub fn step(&mut self, pins: &mut Pins) {
-    if pins.mreq {
-      if pins.rd {
-        pins.data = self.read(pins.address);
-      } else if pins.wr {
-        self.write(pins.address, pins.data);
-      }
-    }
-  }
-
   fn get_idx(n: u16) -> usize {
-    (n as usize) & (!0 >> 2)
+    (n as usize) & 0x3FFF
   }
   fn banks(&self, bn: u16) -> &[u8; 0x4000] {
     match bn >> 14 {
@@ -69,4 +72,3 @@ impl Memory {
     self.banks_mut(idx)[Self::get_idx(idx)] = n;
   }
 }
-
