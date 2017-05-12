@@ -1,14 +1,6 @@
 use Pins;
 use Peripheral;
 
-enum Void { }
-impl Void {
-  #[inline(always)]
-  unsafe fn unreachable() -> ! {
-    match *(0x1 as *const Void) { }
-  }
-}
-
 struct MemBox {
   rom: [u8; 0x4000],  // [0x0000, 0x3FFF]
   ram1: [u8; 0x4000], // [0x4000, 0x7FFF]
