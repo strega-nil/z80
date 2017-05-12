@@ -26,7 +26,7 @@ impl Memory {
   pub fn new(rom: &[u8]) -> Memory {
     use std::mem;
     let mut ret = unsafe {
-      let v = vec![0; mem::size_of::<Memory>()];
+      let v = vec![0u8; mem::size_of::<MemBox>()];
       let b = v.into_boxed_slice();
       let ptr = Box::into_raw(b) as *mut u8 as *mut MemBox;
       Box::from_raw(ptr)
@@ -44,7 +44,7 @@ impl Memory {
       1 => &self.0.ram1,
       2 => &self.0.ram2,
       3 => &self.0.ram3,
-      _ => unsafe { Void::unreachable() }, // unreachable
+      _ => unreachable!(),
     }
   }
   fn banks_mut(&mut self, bn: u16) -> &mut [u8; 0x4000] {
@@ -53,7 +53,7 @@ impl Memory {
       1 => &mut self.0.ram1,
       2 => &mut self.0.ram2,
       3 => &mut self.0.ram3,
-      _ => unsafe { Void::unreachable() }, // unreachable
+      _ => unreachable!(),
     }
   }
 

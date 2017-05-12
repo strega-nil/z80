@@ -5,6 +5,9 @@ authors = ["Nicole Mazzuca <npmazzuca@gmail.com>"]
 license = "MIT/Apache-2.0"
 description = "Basically just sitting on the name"
 
+[features]
+debug = []
+
 [dependencies]
 rustyline = "1.0.0"
 clap = "2.23.3"

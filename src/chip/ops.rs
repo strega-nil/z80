@@ -1,6 +1,4 @@
-use super::ArgsNeeded;
-
-
+// TODO(ubsan): rename to Condition
 #[derive(Copy, Clone, Debug)]
 pub(super) enum Flag {
   Nz,
@@ -27,10 +25,6 @@ impl Flag {
       _ => unreachable!(),
     }
   }
-}
-
-#[derive(Copy, Clone, Debug)]
-pub(super) enum Conditional {
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -120,6 +114,7 @@ pub(super) enum Op {
   //AddHl(Reg16),
 
   Jr(Option<Flag>),
+  Out,
 }
 
 impl Op {
@@ -186,7 +181,11 @@ impl Op {
     }
   }
   fn jmp_block(n: u8) -> Self {
-    unimplemented!()
+    if n == (0xD3 & 0b0011_1111) {
+      Op::Out
+    } else {
+      unimplemented!()
+    }
   }
 
   pub(super) fn decode(n: u8) -> Self {
@@ -196,19 +195,6 @@ impl Op {
       0x2 => Self::arith_block(n & 0b111111),
       0x3 => Self::jmp_block(n & 0b111111),
       _ => unreachable!(),
-    }
-  }
-
-  pub(super) fn args_needed(&self) -> ArgsNeeded {
-    match *self {
-      Op::Nop | Op::Halt => ArgsNeeded::Zero,
-
-      Op::Ld8I(_) => ArgsNeeded::One,
-      Op::Ld8(_, _) => ArgsNeeded::Zero,
-
-      Op::Ld16i(_) => ArgsNeeded::Two,
-      Op::Inc16(_) => ArgsNeeded::Zero,
-      op => panic!("unimplemented inst: {:?}", op),
     }
   }
 }

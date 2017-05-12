@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 extern crate clap;
 
 #[macro_use]
@@ -8,10 +6,12 @@ mod wrapping;
 
 mod chip;
 mod memory;
+mod lprint;
 
 use clap::{App, Arg};
 use chip::Chip;
 use memory::Memory;
+use lprint::LinePrinter;
 
 // NOTE(ubsan): this emulator is *not* cycle-accurate
 
@@ -31,7 +31,7 @@ pub struct Pins {
   pub address: u16,
   pub _m1: bool,
   pub mreq: bool,
-  pub _iorq: bool,
+  pub iorq: bool,
   pub rd: bool,
   pub wr: bool,
   pub _rfsh: bool,
@@ -53,7 +53,7 @@ impl Pins {
       data: 0,
       _m1: false,
       mreq: false,
-      _iorq: false,
+      iorq: false,
       rd: false,
       wr: false,
       _rfsh: false,
@@ -70,7 +70,7 @@ impl Pins {
     self.address = 0;
     self._m1= false;
     self.mreq= false;
-    self._iorq= false;
+    self.iorq= false;
     self.rd= false;
     self.wr= false;
     self._rfsh= false;
@@ -107,8 +107,6 @@ impl<'a> Board<'a> {
 }
 
 fn main() {
-  use std::io::BufRead;
-  /*
   let rom = {
     use std::io::Read;
 
@@ -122,49 +120,16 @@ fn main() {
         .index(1)
       ).get_matches();
     let filename =
-      matches.value_of("input").expect("ROM to boot from required");
+      matches.value_of("rom").expect("ROM to boot from required");
     let mut file = std::fs::File::open(filename).unwrap();
     let mut v = Vec::new();
     file.read_to_end(&mut v).unwrap();
     v
   };
-  */
-
-  // a = *(0x4000) * *(0x4001)
-  let rom = [
-    // data setup
-    0x21, 0x00, 0x40,
-    0x36, 0x10,
-    0x23,
-    0x36, 0x08,
-
-    // multiplication
-    // n1 in b
-    // n2 in c
-    // res in a
-    0x21, 0x00, 0x40,
-    0x46,
-    0x23,
-    0x4E,
-    0xAF,
-
-    0xB9,
-    0x28, 0x0A, // test for zero c
-    0xB8,
-    0x28, 0x07, // test for zero b
-
-    //start:
-    0x80,
-    0x0D,
-    0x20, 0xFE,
-
-    //end:
-    0x76,
-  ];
 
   let mut memory = Memory::new(&rom);
-  let mut board = Board::new(Box::new([&mut memory]));
-  let stdin = std::io::stdin();
+  let mut lprint = LinePrinter::new(0);
+  let mut board = Board::new(Box::new([&mut memory, &mut lprint]));
   while !board.halted() {
     board.step();
     ::std::thread::sleep(::std::time::Duration::from_millis(20));

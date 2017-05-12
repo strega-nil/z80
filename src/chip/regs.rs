@@ -9,6 +9,7 @@ impl Flags {
   pub fn s(&self) -> bool  { self.0 & 0b1000_0000 != 0 }
   pub fn z(&self) -> bool  { self.0 & 0b0100_0000 != 0 }
   pub fn f5(&self) -> bool { self.0 & 0b0010_0000 != 0 }
+  #[allow(dead_code)]
   pub fn h(&self) -> bool  { //self.0 & 0b0001_0000 != 0
     unimplemented!()
   }
@@ -26,7 +27,8 @@ impl Flags {
   pub fn set_s(&mut self, to: bool)  { self.set_bit(7, to) }
   pub fn set_z(&mut self, to: bool)  { self.set_bit(6, to) }
   pub fn set_5(&mut self, to: bool) { self.set_bit(5, to) }
-  pub fn set_h(&mut self, to: bool)  { //self.set_bit(4, to)
+  #[allow(dead_code)]
+  pub fn set_h(&mut self, _to: bool)  { //self.set_bit(4, to)
     unimplemented!()
   }
   pub fn set_3(&mut self, to: bool) { self.set_bit(3, to) }
@@ -80,34 +82,6 @@ impl Regs {
 
   pub fn hl(&self) -> w16 {
     (cvt(self.h) as w16) << 8 | (cvt(self.l) as w16)
-  }
-  pub fn set_hl(&mut self, to: w16) {
-    self.h = cvt(to >> 8);
-    self.l = cvt(to);
-  }
-
-  pub fn bc(&self) -> w16 {
-    (cvt(self.b) as w16) << 8 | (cvt(self.c) as w16)
-  }
-  pub fn set_bc(&mut self, to: w16) {
-    self.b = cvt(to >> 8);
-    self.c = cvt(to);
-  }
-
-  pub fn de(&self) -> w16 {
-    (cvt(self.d) as w16) << 8 | (cvt(self.e) as w16)
-  }
-  pub fn set_de(&mut self, to: w16) {
-    self.d = cvt(to >> 8) as w8;
-    self.e = cvt(to) as w8;
-  }
-
-  pub fn wz(&self) -> w16 {
-    (cvt(self.w) as w16) << 8 | (cvt(self.z) as w16)
-  }
-  pub fn set_wz(&mut self, to: w16) {
-    self.w = cvt(to >> 8) as w8;
-    self.z = cvt(to) as w8;
   }
 }
 

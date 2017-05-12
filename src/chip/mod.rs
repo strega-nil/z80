@@ -1,8 +1,6 @@
 mod regs;
 mod ops;
 
-use std::mem;
-
 use wrapping::{cvt, Extensions, w, w8, w16};
 use Pins;
 
@@ -88,27 +86,20 @@ impl ArithmeticOp {
   }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum ArgsNeeded {
-  Zero,
-  One,
-  Two,
-}
-
 #[derive(Copy, Clone, Debug)]
 enum State {
   FetchInstruction,
   ReceiveInstruction,
-  WriteOut8(w8),
   ReadInto8(Reg8),
   ReadInto16(Reg16, Option<w8>),
   OpAFromPins(ArithmeticOp),
   JumpRel(bool),
+  Out,
 }
 
 pub struct Chip {
   r: Regs,
-  rp: Regs, // r'
+  _rp: Regs, // r'
   sp: w16,
   pc: w16,
   state: State,
@@ -118,7 +109,7 @@ impl Chip {
   pub fn new() -> Self {
     Chip {
       r: Regs::new(),
-      rp: Regs::new(),
+      _rp: Regs::new(),
       sp: w(0),
       pc: w(0),
       state: State::FetchInstruction,
@@ -141,14 +132,6 @@ impl Chip {
         let op = Op::decode(pins.data);
         self.run_op(pins, op);
       },
-      State::WriteOut8(num) => {
-        debug!("state: write out data ({:02X})", num);
-        pins.mreq = true;
-        pins.wr = true;
-        pins.address = self.r.wz().0;
-        pins.data = num.0;
-        self.state = State::FetchInstruction;
-      },
       State::ReadInto8(into) => {
         debug!("state: read into {:?} ({:02X})", into, pins.data);
         let data = w(pins.data);
@@ -168,21 +151,28 @@ impl Chip {
           self.pc += w(1);
           self.state = State::ReadInto16(into, Some(lower));
         }
-      }
+      },
       State::OpAFromPins(op) => {
         let data = w(pins.data);
         op.do_op(self, data);
-      }
+      },
       State::JumpRel(cond) => {
         let data = w(pins.data as i8 as i16 as u16); // use sign-extension
         if cond { self.pc -= w(2); self.pc += data; }
+        self.state = State::FetchInstruction;
+      },
+      State::Out => {
+        let addr = pins.data;
+        pins.iorq = true;
+        pins.wr = true;
+        pins.address = addr as u16;
+        pins.data = self.r.a.0;
         self.state = State::FetchInstruction;
       }
     }
   }
 
   fn load8_imm(&mut self, pins: &mut Pins, into: Reg8, num: w8) {
-    self.state = State::FetchInstruction;
     match into {
       Reg8::A => { self.r.a = num; },
       Reg8::B => { self.r.b = num; },
@@ -192,11 +182,13 @@ impl Chip {
       Reg8::H => { self.r.h = num; },
       Reg8::L => { self.r.l = num; },
       Reg8::Hld => {
-        self.r.w = self.r.h;
-        self.r.z = self.r.l;
-        self.state = State::WriteOut8(num);
+        pins.mreq = true;
+        pins.wr = true;
+        pins.address = self.r.hl().0;
+        pins.data = num.0;
       },
     }
+    self.state = State::FetchInstruction;
   }
 
   fn load8(&mut self, pins: &mut Pins, into: Reg8, from: Option<Reg8>) {
@@ -352,6 +344,13 @@ impl Chip {
       Op::Halt => {
         debug!("register a: {:02X}", self.r.a);
         pins.halt = true;
+      },
+      Op::Out => {
+        pins.mreq = true;
+        pins.rd = true;
+        pins.address = self.pc.0;
+        self.pc += w(1);
+        self.state = State::Out;
       },
 
       // --- LOADS ---
