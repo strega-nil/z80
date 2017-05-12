@@ -3,11 +3,90 @@ mod ops;
 
 use std::mem;
 
-use wrapping::{cvt, w, w8, w16};
+use wrapping::{cvt, Extensions, w, w8, w16};
 use Pins;
 
 use self::regs::Regs;
-use self::ops::{Reg8, Reg16, Op};
+use self::ops::{Flag, Reg8, Reg16, Op};
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ArithmeticOp {
+  Add,
+  Adc,
+  Sub,
+  Sbc,
+  And,
+  Or,
+  Xor,
+  Cp,
+}
+
+impl ArithmeticOp {
+  fn do_op(self, chip: &mut Chip, rhs: w8) {
+    let lhs = chip.r.a;
+    let (res, carry, subtraction, pv) = match self {
+      ArithmeticOp::Add => {
+        let (res, carry) = lhs.overflowing_add(rhs);
+        (res, carry, false, res < lhs)
+      },
+      ArithmeticOp::Adc => {
+        let (res, carry0) = lhs.overflowing_add(w(chip.r.flags.c() as u8));
+        let (res, carry1) = res.overflowing_add(rhs);
+        (res, carry0 | carry1, false, if chip.r.flags.c() {
+          res <= lhs
+        } else {
+          res < lhs
+        })
+      },
+      ArithmeticOp::Sub => {
+        let (res, carry) = lhs.overflowing_sub(rhs);
+        (res, carry, true, res > lhs)
+      },
+      ArithmeticOp::Sbc => {
+        let (res, carry0) = lhs.overflowing_sub(w(chip.r.flags.c() as u8));
+        let (res, carry1) = res.overflowing_sub(rhs);
+        (res, carry0 | carry1, true, if chip.r.flags.c() {
+          res >= lhs
+        } else {
+          res > lhs
+        })
+      },
+      ArithmeticOp::Cp => {
+        let (res, carry) = lhs.overflowing_sub(rhs);
+        (res, carry, true, res > lhs)
+      },
+      ArithmeticOp::And => {
+        let res = lhs & rhs;
+        (res, false, false, res.count_ones() % 2 == 0)
+      },
+      ArithmeticOp::Or => {
+        let res = lhs | rhs;
+        (res, false, false, res.count_ones() % 2 == 0)
+      },
+      ArithmeticOp::Xor => {
+        let res = lhs ^ rhs;
+        (res, false, false, res.count_ones() % 2 == 0)
+      },
+    };
+
+    if let ArithmeticOp::Cp = self {
+      // --
+    } else {
+      chip.r.a = res;
+    }
+
+    chip.r.flags.set_s(res & w(0b1000_0000) != w(0));
+    chip.r.flags.set_z(res == w(0));
+    chip.r.flags.set_5(chip.r.a & w(0b1_0000) != w(0));
+    // NOTE(ubsan): I don't feel like writing the code for half-carry
+    // chip.r.flags.set_h();
+    chip.r.flags.set_3(chip.r.a & w(0b1_0000) != w(0));
+    chip.r.flags.set_v(pv);
+    chip.r.flags.set_n(subtraction);
+    chip.r.flags.set_c(carry);
+    chip.state = State::FetchInstruction;
+  }
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum ArgsNeeded {
@@ -23,6 +102,8 @@ enum State {
   WriteOut8(w8),
   ReadInto8(Reg8),
   ReadInto16(Reg16, Option<w8>),
+  OpAFromPins(ArithmeticOp),
+  JumpRel(bool),
 }
 
 pub struct Chip {
@@ -87,6 +168,15 @@ impl Chip {
           self.pc += w(1);
           self.state = State::ReadInto16(into, Some(lower));
         }
+      }
+      State::OpAFromPins(op) => {
+        let data = w(pins.data);
+        op.do_op(self, data);
+      }
+      State::JumpRel(cond) => {
+        let data = w(pins.data as i8 as i16 as u16); // use sign-extension
+        if cond { self.pc -= w(2); self.pc += data; }
+        self.state = State::FetchInstruction;
       }
     }
   }
@@ -186,15 +276,78 @@ impl Chip {
     }
   }
 
-  fn run_op(&mut self, pins: &mut Pins, op: Op) {
-    // NOTE(ubsan): how op arguments work:
-    // ArgsNeeded::Zero - no arguments, trivial
-    // ArgsNeeded::One - one argument at pins.data
-    // ArgsNeeded::Two -
-    //   two arguments; the first is at z, the second is at pins.data
-    // numbering goes backwards for arguments
+  fn arith_op_a(&mut self, pins: &mut Pins, op: ArithmeticOp, from: Reg8) {
+    match from {
+      Reg8::Hld => {
+        pins.mreq = true;
+        pins.rd = true;
+        pins.address = self.r.hl().0;
+        self.state = State::OpAFromPins(op);
+      },
+      Reg8::A => { let num = self.r.a; op.do_op(self, num); },
+      Reg8::B => { let num = self.r.b; op.do_op(self, num); },
+      Reg8::C => { let num = self.r.c; op.do_op(self, num); },
+      Reg8::D => { let num = self.r.d; op.do_op(self, num); },
+      Reg8::E => { let num = self.r.e; op.do_op(self, num); },
+      Reg8::H => { let num = self.r.h; op.do_op(self, num); },
+      Reg8::L => { let num = self.r.l; op.do_op(self, num); },
+    }
+  }
 
+  fn inc_dec8(&mut self, _pins: &mut Pins, reg: Reg8, dec: bool) {
+    let f = if dec {
+      fn _dec(reg: &mut w8) -> w8 { *reg -= w(1); *reg } _dec
+    } else {
+      fn _inc(reg: &mut w8) -> w8 { *reg += w(1); *reg } _inc
+    };
+    let res = match reg {
+      Reg8::Hld => unimplemented!(),
+      Reg8::A => { f(&mut self.r.a) },
+      Reg8::B => { f(&mut self.r.b) },
+      Reg8::C => { f(&mut self.r.c) },
+      Reg8::D => { f(&mut self.r.d) },
+      Reg8::E => { f(&mut self.r.e) },
+      Reg8::H => { f(&mut self.r.h) },
+      Reg8::L => { f(&mut self.r.l) },
+    };
+
+    self.r.flags.set_n(dec);
+    self.r.flags.set_v(if dec { res == w(0xFF) } else { res == w(0) });
+    // self.r.flags.set_h();
+    self.r.flags.set_z(res == w(0));
+    self.r.flags.set_s(res & w(0b1000_0000) != w(0));
+    self.state = State::FetchInstruction;
+  }
+
+  fn flag(&mut self, flag: Flag) -> bool {
+    match flag {
+      Flag::Nz => !self.r.flags.z(),
+      Flag::Z  => self.r.flags.z(),
+      Flag::Nc => !self.r.flags.c(),
+      Flag::C  => self.r.flags.c(),
+      Flag::Po => !self.r.flags.v(),
+      Flag::Pe => self.r.flags.v(),
+      Flag::P  => !self.r.flags.s(),
+      Flag::M  => self.r.flags.s(),
+    }
+  }
+
+  fn jump_rel(&mut self, pins: &mut Pins, flag: Option<Flag>) {
+    let cond = if let Some(flag) = flag {
+      self.flag(flag)
+    } else {
+      true
+    };
+    pins.mreq = true;
+    pins.rd = true;
+    pins.address = self.pc.0;
+    self.pc += w(1); // should be moved back by the jump, if it jumps
+    self.state = State::JumpRel(cond);
+  }
+
+  fn run_op(&mut self, pins: &mut Pins, op: Op) {
     match op {
+      // --- MISC ---
       Op::Nop => {},
       Op::Halt => {
         debug!("register a: {:02X}", self.r.a);
@@ -207,15 +360,35 @@ impl Chip {
       Op::Ld16i(into) => self.load16(pins, into, None),
 
       // --- INCS and DECS ---
+      Op::Inc8(reg) => self.inc_dec8(pins, reg, false),
+      Op::Dec8(reg) => self.inc_dec8(pins, reg, true),
       Op::Inc16(reg) => {
         // no flags are updated
         let (mut upper, mut lower) = self.fetch16_imm(reg);
         lower += w(1);
         if lower == w(0) { upper += w(1); }
         self.load16_imm(reg, upper, lower);
-      }
+      },
+      Op::Dec16(reg) => {
+        // no flags are updated
+        let (mut upper, mut lower) = self.fetch16_imm(reg);
+        lower -= w(1);
+        if lower == w(0) { upper -= w(1); }
+        self.load16_imm(reg, upper, lower);
+      },
 
-      inst => panic!("unimplemented instruction: {:?}", inst),
+      // --- ARITHMETIC ---
+      Op::AddA(reg) => self.arith_op_a(pins, ArithmeticOp::Add, reg),
+      Op::AdcA(reg) => self.arith_op_a(pins, ArithmeticOp::Adc, reg),
+      Op::SubA(reg) => self.arith_op_a(pins, ArithmeticOp::Sub, reg),
+      Op::SbcA(reg) => self.arith_op_a(pins, ArithmeticOp::Sbc, reg),
+      Op::AndA(reg) => self.arith_op_a(pins, ArithmeticOp::And, reg),
+      Op::XorA(reg) => self.arith_op_a(pins, ArithmeticOp::Xor, reg),
+      Op::OrA(reg) => self.arith_op_a(pins, ArithmeticOp::Or, reg),
+      Op::CpA(reg) => self.arith_op_a(pins, ArithmeticOp::Cp, reg),
+
+      // --- JUMPS ---
+      Op::Jr(flag) => self.jump_rel(pins, flag),
     }
   }
 }

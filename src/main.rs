@@ -167,7 +167,7 @@ fn main() {
   let stdin = std::io::stdin();
   while !board.halted() {
     board.step();
-    ::std::thread::sleep_ms(20);
+    ::std::thread::sleep(::std::time::Duration::from_millis(20));
   }
 }
 

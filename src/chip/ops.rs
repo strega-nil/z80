@@ -1,5 +1,34 @@
 use super::ArgsNeeded;
 
+
+#[derive(Copy, Clone, Debug)]
+pub(super) enum Flag {
+  Nz,
+  Z,
+  Nc,
+  C,
+  Po,
+  Pe,
+  P,
+  M,
+}
+
+impl Flag {
+  fn from_n(n: u8) -> Self {
+    match n & 0b111 {
+      0x0 => Flag::Nz,
+      0x1 => Flag::Z,
+      0x2 => Flag::Nc,
+      0x3 => Flag::C,
+      0x4 => Flag::Po,
+      0x5 => Flag::Pe,
+      0x6 => Flag::P,
+      0x7 => Flag::M,
+      _ => unreachable!(),
+    }
+  }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub(super) enum Conditional {
 }
@@ -70,15 +99,27 @@ impl Reg16 {
 pub(super) enum Op {
   Nop,
   Halt,
-  Ld16i(Reg16),
-  AddHl(Reg16),
 
   Ld8I(Reg8),
   Ld8(Reg8, Reg8),
+  Ld16i(Reg16),
 
   Inc8(Reg8),
+  Dec8(Reg8),
   Inc16(Reg16),
   Dec16(Reg16),
+
+  AddA(Reg8),
+  AdcA(Reg8),
+  SubA(Reg8),
+  SbcA(Reg8),
+  AndA(Reg8),
+  XorA(Reg8),
+  OrA(Reg8),
+  CpA(Reg8),
+  //AddHl(Reg16),
+
+  Jr(Option<Flag>),
 }
 
 impl Op {
@@ -86,17 +127,19 @@ impl Op {
     let (arg0, arg1) = ((n & 0b111000) >> 3, n & 0b111);
     match arg1 {
       0x0 => { // nop, ex af, and the jrs
-        if arg0 == 0x0 {
-          Op::Nop
-        } else {
-          unimplemented!()
+        match Flag::from_n(arg0 + 4) {
+          Flag::Po => Op::Nop,
+          Flag::Pe => panic!("Unimplemented: ex af, af'"),
+          Flag::P => panic!("Unimplemented: djnz"),
+          Flag::M => Op::Jr(None),
+          flag => Op::Jr(Some(flag)),
         }
       },
       0x1 => { // 16-bit loads and adds
         let (op, arg) = Reg16::op_arg(n);
         match op {
           WhichOp::First => Op::Ld16i(arg),
-          WhichOp::Second => Op::AddHl(arg),
+          WhichOp::Second => panic!("Unimplemented: add hl, ..."),
         }
       },
       0x2 => { // deref loads
@@ -110,10 +153,10 @@ impl Op {
         }
       },
       0x4 => { // 8-bit incs
-        unimplemented!()
+        Op::Inc8(Reg8::single_arg(arg0))
       },
       0x5 => { // 8-bit decs
-        unimplemented!()
+        Op::Dec8(Reg8::single_arg(arg0))
       },
       0x6 => { // immediate loads
         Op::Ld8I(Reg8::single_arg(arg0))
@@ -131,7 +174,16 @@ impl Op {
     }
   }
   fn arith_block(n: u8) -> Self {
-    panic!("unimplemented: arith ({:02X})", n)
+    match Reg8::arith_ld_arg(n) {
+      (Reg8::B, arg) => Op::AddA(arg),
+      (Reg8::C, arg) => Op::AdcA(arg),
+      (Reg8::D, arg) => Op::SubA(arg),
+      (Reg8::E, arg) => Op::SbcA(arg),
+      (Reg8::H, arg) => Op::AndA(arg),
+      (Reg8::L, arg) => Op::XorA(arg),
+      (Reg8::Hld, arg) => Op::OrA(arg),
+      (Reg8::A, arg) => Op::CpA(arg),
+    }
   }
   fn jmp_block(n: u8) -> Self {
     unimplemented!()

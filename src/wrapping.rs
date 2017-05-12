@@ -35,7 +35,7 @@ pub trait Extensions: Sized {
   fn overflowing_div(self, other: Self) -> (Self, bool);
   fn overflowing_rem(self, other: Self) -> (Self, bool);
   fn overflowing_neg(self) -> (Self, bool);
-  fn top_bit_set(self) -> bool;
+  fn count_ones(self) -> u32;
 }
 
 macro_rules! impl_we {
@@ -65,8 +65,8 @@ macro_rules! impl_we {
         let (v, o) = self.0.overflowing_neg();
         (w(v), o)
       }
-      fn top_bit_set(self) -> bool {
-        self & w(!0 / 2 + 1) != w(0)
+      fn count_ones(self) -> u32 {
+        self.0.count_ones()
       }
     })*
   )

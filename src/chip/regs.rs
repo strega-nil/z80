@@ -9,9 +9,11 @@ impl Flags {
   pub fn s(&self) -> bool  { self.0 & 0b1000_0000 != 0 }
   pub fn z(&self) -> bool  { self.0 & 0b0100_0000 != 0 }
   pub fn f5(&self) -> bool { self.0 & 0b0010_0000 != 0 }
-  pub fn h(&self) -> bool  { self.0 & 0b0001_0000 != 0 }
+  pub fn h(&self) -> bool  { //self.0 & 0b0001_0000 != 0
+    unimplemented!()
+  }
   pub fn f3(&self) -> bool { self.0 & 0b0000_1000 != 0 }
-  pub fn pv(&self) -> bool { self.0 & 0b0000_0100 != 0 }
+  pub fn v(&self) -> bool { self.0 & 0b0000_0100 != 0 }
   pub fn n(&self) -> bool  { self.0 & 0b0000_0010 != 0 }
   pub fn c(&self) -> bool  { self.0 & 0b0000_0001 != 0 }
 
@@ -23,10 +25,12 @@ impl Flags {
 
   pub fn set_s(&mut self, to: bool)  { self.set_bit(7, to) }
   pub fn set_z(&mut self, to: bool)  { self.set_bit(6, to) }
-  pub fn set_f5(&mut self, to: bool) { self.set_bit(5, to) }
-  pub fn set_h(&mut self, to: bool)  { self.set_bit(4, to) }
-  pub fn set_f3(&mut self, to: bool) { self.set_bit(3, to) }
-  pub fn set_pv(&mut self, to: bool) { self.set_bit(2, to) }
+  pub fn set_5(&mut self, to: bool) { self.set_bit(5, to) }
+  pub fn set_h(&mut self, to: bool)  { //self.set_bit(4, to)
+    unimplemented!()
+  }
+  pub fn set_3(&mut self, to: bool) { self.set_bit(3, to) }
+  pub fn set_v(&mut self, to: bool) { self.set_bit(2, to) }
   pub fn set_n(&mut self, to: bool)  { self.set_bit(1, to) }
   pub fn set_c(&mut self, to: bool)  { self.set_bit(0, to) }
 }
@@ -35,10 +39,9 @@ impl Debug for Flags {
     f.debug_struct("ConditionCodes")
       .field("s", &self.s())
       .field("z", &self.z())
-      .field("f5", &self.f5())
-      .field("h", &self.h())
-      .field("f3", &self.f3())
-      .field("p/v", &self.pv())
+      .field("5", &self.f5())
+      .field("3", &self.f3())
+      .field("v", &self.v())
       .field("n", &self.n())
       .field("c", &self.c())
       .finish()
@@ -48,6 +51,7 @@ impl Debug for Flags {
 #[derive(Debug)]
 pub struct Regs {
   pub a: w8,
+  pub flags: Flags,
   pub b: w8,
   pub c: w8,
   pub d: w8,
@@ -56,7 +60,6 @@ pub struct Regs {
   pub l: w8,
   pub w: w8,
   pub z: w8,
-  pub flags: Flags,
 }
 
 impl Regs {
