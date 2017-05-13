@@ -6,12 +6,12 @@ mod wrapping;
 
 mod chip;
 mod memory;
-mod lprint;
+mod chprint;
 
 use clap::{App, Arg};
 use chip::Chip;
 use memory::Memory;
-use lprint::LinePrinter;
+use chprint::CharPrinter;
 
 // NOTE(ubsan): this emulator is *not* cycle-accurate
 
@@ -40,8 +40,7 @@ pub struct Pins {
 
   // NOTE(ubsan): input
   pub _busreq: bool,
-  pub _wait: bool,
-  pub _int: bool,
+  pub _wait: bool, pub _int: bool,
   pub _nmi: bool,
   pub _reset: bool,
 }
@@ -128,8 +127,8 @@ fn main() {
   };
 
   let mut memory = Memory::new(&rom);
-  let mut lprint = LinePrinter::new(0);
-  let mut board = Board::new(Box::new([&mut memory, &mut lprint]));
+  let mut chprint = CharPrinter::new(0);
+  let mut board = Board::new(Box::new([&mut memory, &mut chprint]));
   while !board.halted() {
     board.step();
     ::std::thread::sleep(::std::time::Duration::from_millis(1));

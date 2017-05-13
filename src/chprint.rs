@@ -1,15 +1,15 @@
 use {Peripheral, Pins};
 use std::io::{Write, Stdout, stdout};
 
-pub struct LinePrinter {
+pub struct CharPrinter {
   stdout: Stdout,
   port: u8,
   column: u8,
 }
 
-impl LinePrinter {
+impl CharPrinter {
   pub fn new(port: u8) -> Self {
-    LinePrinter {
+    CharPrinter {
       stdout: stdout(),
       port,
       column: 0,
@@ -17,7 +17,7 @@ impl LinePrinter {
   }
 }
 
-impl Peripheral for LinePrinter {
+impl Peripheral for CharPrinter {
   fn step(&mut self, pins: &mut Pins) {
     if pins.iorq && pins.address as u8 == self.port {
       debug!("Printing: ");
