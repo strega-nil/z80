@@ -132,7 +132,7 @@ fn main() {
   let mut board = Board::new(Box::new([&mut memory, &mut lprint]));
   while !board.halted() {
     board.step();
-    ::std::thread::sleep(::std::time::Duration::from_millis(20));
+    ::std::thread::sleep(::std::time::Duration::from_millis(1));
   }
 }
 
